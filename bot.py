@@ -12,7 +12,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
-# تنظیم تایم‌اوت کل برنامه (حداکثر ۶۰ ثانیه)
+# تنظیم تایم‌اوت کل برنامه (حداکثر ۶۰ ثانیه برای جلوگیری از معطلی در گیت‌هاب)
 def timeout_handler(signum, frame):
     print("⏰ زمان اجرای اسکریپت به پایان رسید (Timeout 60s). خروج جهت جلوگیری از گیر کردن.")
     sys.exit(0)
@@ -165,7 +165,8 @@ def select_and_analyze(articles):
     {news_text}
     """
 
-    for model_name in ["gemini-2.5-flash", "gemini-2.0-flash"]:
+    # استفاده از مدل جدید و پایدار gemini-3.8-flash
+    for model_name in ["gemini-3.8-flash", "gemini-1.5-flash"]:
         try:
             print(f"🧠 پردازش با {model_name}...")
             response = client.models.generate_content(
