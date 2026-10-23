@@ -8,9 +8,15 @@ on:
 permissions:
   contents: write         # مجوز ذخیره خودکار فایل seen.json در گیت‌هاب
 
+# جلوگیری از اجرای هم‌زمان (مثلاً دستی + زمان‌بندی‌شده) که باعث تداخل در push فایل seen.json می‌شود
+concurrency:
+  group: eitaa-news-bot
+  cancel-in-progress: false
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,10 +27,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install feedparser requests pydantic google-genai
-
+        run: | python -m pip install --upgrade pip pip install feedparser requests pydantic google-genai 
       - name: Run news bot
         env:
           GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
@@ -33,8 +36,4 @@ jobs:
         run: python bot.py
 
       - name: Commit and push updated seen.json
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add seen.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update seen.json [skip ci]" && git push)
+        run: | git config --global user.name "github-actions[bot]" git config --global user.email "github-actions[bot]@users.noreply.github.com" git add seen.json git diff --quiet && git diff --staged --quiet || (git commit -m "Update seen.json [skip ci]" && git push)
