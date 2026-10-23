@@ -158,14 +158,13 @@ def select_and_analyze(articles):
 
     قوانین:
     1. بدون حدس و اطلاعات خارج از متن.
-    2. عدم استفاده از ستاره (**) یا تگ HTML در متون.
+    2. عدم استفاده از ستاره (*) یا تگ HTML در متون.
     3. لحن کوتاه ژورنالیستی.
 
     اخبار:
     {news_text}
     """
 
-    # استفاده از مدل جدید و پایدار gemini-3.8-flash
     for model_name in ["gemini-3.8-flash", "gemini-1.5-flash"]:
         try:
             print(f"🧠 پردازش با {model_name}...")
@@ -195,7 +194,8 @@ def format_post(item, source_name):
     clean_tags = [f"#{t.strip().lstrip('#').replace(' ', '_')}" for t in raw_tags[:3] if t.strip()]
     hashtags_str = " ".join(clean_tags) if clean_tags else "#خبر #فناوری"
 
-    return f"**📌 {title}**\n\n**📝 خلاصه:**\n{summary}\n\n**💡 چرا مهم است؟**\n{why_imp}\n\n🏷 {hashtags_str}\n📡 منبع: {source_name}\n🆔 @{CHANNEL}"
+    # متن کاملاً ساده و بدون هیچ‌گونه علامت بولد یا مارک‌داون اضافی
+    return f"📌 {title}\n\n📝 خلاصه:\n{summary}\n\n💡 چرا مهم است؟\n{why_imp}\n\n🏷 {hashtags_str}\n📡 منبع: {source_name}\n🆔 @{CHANNEL}"
 
 
 def send_to_eitaa(text):
