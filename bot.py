@@ -214,9 +214,9 @@ SKIP_MODEL_CODES = {429, 504}
 
 # به ترتیب اولویت؛ مدل‌هایی که در API وجود ندارند خودکار حذف می‌شوند
 MODELS = [
+    "gemini-3.6-flash",   # در چند ران پیاپی از اولین تلاش جواب داده (سریع و پایدار)
     "gemini-3.8-flash",
     "gemini-3.7-flash",
-    "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
 ]
