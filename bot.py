@@ -34,7 +34,6 @@ CHANNEL = (
     .strip()
 )
 
-# لیست منابع فید RSS شامل تکنولوژی، ورزش، بین‌الملل و سیاست
 RSS_FEEDS = [
     {
         "name": "تک‌کرانچ (هوش مصنوعی)",
@@ -108,9 +107,9 @@ def fetch_single_feed(feed_info, seen_set):
     try:
         print(f"⏳ دریافت هم‌زمان: {feed_info['name']}...")
         try:
-            resp = requests.get(feed_info["url"], headers=headers, timeout=5)
+            resp = requests.get(feed_info["url"], headers=headers, timeout=6)
         except requests.exceptions.SSLError:
-            resp = requests.get(feed_info["url"], headers=headers, timeout=5, verify=False)
+            resp = requests.get(feed_info["url"], headers=headers, timeout=6, verify=False)
 
         if resp.status_code != 200:
             return []
@@ -164,7 +163,6 @@ def select_and_analyze(articles):
     for i, art in enumerate(articles):
         news_text += f"[{i}] منبع: {art['source']} | دسته‌بندی: {art['category']} | تیتر: {art['title']}\nمتن: {art['summary']}\n---\n"
 
-    # دستورالعمل دقیق برای تفکیک موضوعی ۳ پست خروجی
     prompt = f"""نقش: سردبیر «عدل نیوز». شما باید دقیقاً ۳ خبر برتر را از بین اخبار زیر انتخاب کنید، به طوری که تفکیک موضوعی زیر به دقت رعایت شود:
     1. یک خبر حتماً درباره «تکنولوژی و هوش مصنوعی (AI)» باشد.
     2. یک خبر حتماً درباره «ورزش» باشد.
@@ -179,22 +177,29 @@ def select_and_analyze(articles):
     {news_text}
     """
 
-    for model_name in ["gemini-3.8-flash", "gemini-1.5-flash"]:
-        try:
-            print(f"🧠 پردازش با {model_name}...")
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=AnalyzedNewsBatch,
-                    temperature=0.2,
-                ),
-            )
-            parsed_data = json.loads(response.text)
-            return parsed_data.get("selected_news", [])
-        except Exception as e:
-            print(f"⚠️ خطای مدل {model_name}: {e}")
+    # لیست مدل‌های معتبر جهت تلاش مجدد و عبور از شلوغی سرور
+    candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+
+    for model_name in candidate_models:
+        for attempt in range(2):  # تلاش مجدد در صورت ترافیک سنگین ۵۰۳
+            try:
+                print(f"🧠 پردازش با {model_name} (تلاش {attempt + 1})...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=AnalyzedNewsBatch,
+                        temperature=0.2,
+                    ),
+                )
+                parsed_data = json.loads(response.text)
+                selected = parsed_data.get("selected_news", [])
+                if selected:
+                    return selected
+            except Exception as e:
+                print(f"⚠️ خطای مدل {model_name}: {e}")
+                time.sleep(2)  # صبر کوتاه قبل از تلاش مجدد یا تغییر مدل
 
     return []
 
