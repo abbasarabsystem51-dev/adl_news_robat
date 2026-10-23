@@ -75,8 +75,6 @@ RSS_FEEDS = [
      "url": "https://www.theguardian.com/world/rss"},
     {"name": "رویترز (جهان)", "group": "politics", "category": "بین‌الملل و سیاست",
      "url": GNEWS.format(w="24h", sec="world")},
-    {"name": "خبرگزاری فارس", "group": "politics", "category": "سیاست و اخبار عمومی",
-     "url": "https://www.farsnews.ir/rss"},
     {"name": "خبرگزاری مهر", "group": "politics", "category": "سیاست و اخبار عمومی",
      "url": "https://www.mehrnews.com/rss"},
     {"name": "پرس‌تی‌وی", "group": "politics", "category": "بین‌الملل و سیاست",
@@ -207,9 +205,12 @@ def balance_articles(articles):
     return result
 
 
-# کدهایی که ارزش تلاش مجدد روی همان مدل دارند (خطای موقت / overload سرور).
-# 429 (پر شدن سهمیه) عمداً نیست: هر مدل سهمیه جدا دارد، پس سریع می‌رویم سراغ مدل بعدی.
-RETRYABLE = {408, 500, 502, 503, 504}
+# کدهایی که ارزش تلاش مجدد روی همان مدل دارند (خطای موقت و سریع‌برگشت مثل 503).
+# این کدها فوراً می‌روند سراغ مدل بعدی (تکرار روی همان مدل فایده ندارد و وقت می‌سوزاند):
+#   429 = پر شدن سهمیه (هر مدل سهمیه جدا دارد)
+#   504 = تایم‌اوت سمت گوگل؛ دوباره همان درخواست سنگین هم احتمالاً تایم‌اوت می‌خورد
+RETRYABLE = {408, 500, 502, 503}
+SKIP_MODEL_CODES = {429, 504}
 
 # به ترتیب اولویت؛ مدل‌هایی که در API وجود ندارند خودکار حذف می‌شوند
 MODELS = [
@@ -238,34 +239,55 @@ def _parse_selected(resp):
     return json.loads(raw).get("selected_news", [])
 
 
-def _try_model(client, model, prompt, attempts=3, base=2, cap=30):
+def _make_config(low_thinking):
+    cfg = dict(
+        response_mime_type="application/json",
+        response_schema=AnalyzedNewsBatch,
+        temperature=0.2,
+    )
+    if low_thinking:
+        # تفکر سبک = پاسخ سریع‌تر و تایم‌اوت کمتر؛ برای انتخاب خبر کافی است
+        cfg["thinking_config"] = types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW)
+    return types.GenerateContentConfig(**cfg)
+
+
+def _try_model(client, model, prompt, attempts=2, base=2, cap=30):
     """روی یک مدل با exponential backoff + jitter تلاش می‌کند. شکست = None."""
-    for i in range(1, attempts + 1):
+    low_thinking = True
+    i = 0
+    while i < attempts:
+        i += 1
         try:
             resp = client.models.generate_content(
                 model=model,
                 contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=AnalyzedNewsBatch,
-                    temperature=0.2,
-                ),
+                config=_make_config(low_thinking),
             )
             selected = _parse_selected(resp)
             if selected:
                 return selected
             print(f"⚠️ {model}: خروجی خالی (تلاش {i}/{attempts})")
         except errors.APIError as e:
-            if e.code == 429:
-                print(f"⛔ {model}: سهمیه پر شده (429) → مدل بعدی")
+            if e.code == 400 and low_thinking:
+                # بعضی مدل‌ها thinking_level را قبول نمی‌کنند؛ همان تلاش را بدون آن تکرار کن
+                print(f"⚠️ {model}: خطای 400 با thinking_level؛ تلاش مجدد بدون آن")
+                low_thinking = False
+                i -= 1
+                continue
+            if e.code in SKIP_MODEL_CODES:
+                print(f"⛔ {model}: خطای {e.code} (سهمیه/تایم‌اوت گوگل) → مدل بعدی")
                 return None
             if e.code not in RETRYABLE:
-                # 404 / 400 / 403 ...: تکرار فایده ندارد، برو مدل بعدی
+                # 404 / 403 ...: تکرار فایده ندارد، برو مدل بعدی
                 print(f"⛔ {model}: خطای {e.code} (غیرقابل تلاش مجدد) → مدل بعدی")
                 return None
             print(f"⚠️ {model} تلاش {i}/{attempts}: خطای {e.code}")
         except (json.JSONDecodeError, ValueError) as e:
             print(f"⚠️ {model}: خروجی نامعتبر ({e})")
+        except Exception as e:
+            # تایم‌اوت سمت کلاینت، قطعی شبکه و ...: وقت را نسوزان، برو مدل بعدی
+            print(f"⛔ {model}: {type(e).__name__} (تایم‌اوت/شبکه) → مدل بعدی")
+            return None
 
         if i < attempts:
             delay = min(cap, base * 2 ** (i - 1)) + random.uniform(0, 1)
@@ -281,7 +303,7 @@ def select_and_analyze(articles):
     client = genai.Client(
         api_key=GEMINI_KEY,
         http_options=types.HttpOptions(
-            timeout=60_000,  # میلی‌ثانیه
+            timeout=50_000,  # میلی‌ثانیه؛ بیشتر از این صبر نمی‌کنیم
             # ریتری داخلی SDK خاموش؛ ریتری را خودمان کنترل می‌کنیم تا سهمیه دوبرابر نسوزد
             retry_options=types.HttpRetryOptions(attempts=1),
         ),
