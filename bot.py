@@ -212,7 +212,8 @@ def select_and_analyze(articles):
     {news_text}
     """
 
-    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    # به‌روزرسانی مدل‌ها به نسخه‌های فعال و رسمی
+    models_to_try = ["gemini-3.8-flash", "gemini-1.5-flash"]
     for model_name in models_to_try:
         for attempt in range(1, 3):
             try:
