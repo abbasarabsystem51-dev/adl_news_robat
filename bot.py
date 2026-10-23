@@ -34,6 +34,7 @@ CHANNEL = (
     .strip()
 )
 
+# لیست منابع فید RSS استاندارد و پرسرعت
 RSS_FEEDS = [
     {
         "name": "تک‌کرانچ (هوش مصنوعی)",
@@ -92,6 +93,7 @@ def load_seen():
 
 def save_seen(seen_list):
     unique_seen = list(dict.fromkeys(seen_list))
+    # نگهداری ۵۰۰ خبر آخر جهت جلوگیری از حجیم شدن فایل
     with SEEN_FILE.open("w", encoding="utf-8") as f:
         json.dump(unique_seen[-500:], f, ensure_ascii=False, indent=2)
 
@@ -109,6 +111,7 @@ def fetch_single_feed(feed_info, seen_set):
         try:
             resp = requests.get(feed_info["url"], headers=headers, timeout=6)
         except requests.exceptions.SSLError:
+            # مدیریت خطای گواهی SSL برای خبرگزاری‌های داخلی
             resp = requests.get(feed_info["url"], headers=headers, timeout=6, verify=False)
 
         if resp.status_code != 200:
@@ -141,6 +144,7 @@ def fetch_new_articles(seen_list):
     articles = []
     batch_links = set()
 
+    # دریافت موازی تمامی فیدها جهت سرعت فوق‌العاده
     with ThreadPoolExecutor(max_workers=len(RSS_FEEDS)) as executor:
         futures = {executor.submit(fetch_single_feed, feed, seen_set): feed for feed in RSS_FEEDS}
         for future in as_completed(futures):
@@ -163,43 +167,53 @@ def select_and_analyze(articles):
     for i, art in enumerate(articles):
         news_text += f"[{i}] منبع: {art['source']} | دسته‌بندی: {art['category']} | تیتر: {art['title']}\nمتن: {art['summary']}\n---\n"
 
-    prompt = f"""نقش: سردبیر «عدل نیوز». شما باید دقیقاً ۳ خبر برتر را از بین اخبار زیر انتخاب کنید، به طوری که تفکیک موضوعی زیر به دقت رعایت شود:
+    prompt = f"""نقش: سردبیر ارشد «عدل نیوز». شما باید دقیقاً ۳ خبر برتر را از بین اخبار زیر انتخاب کنید، به طوری که تفکیک موضوعی زیر به دقت رعایت شود:
     1. یک خبر حتماً درباره «تکنولوژی و هوش مصنوعی (AI)» باشد.
     2. یک خبر حتماً درباره «ورزش» باشد.
     3. یک خبر حتماً درباره «جنگ، مسائل بین‌الملل یا سیاست» باشد.
 
-    قوانین:
+    قوانین سخت‌گیرانه:
     1. بدون حدس و اطلاعات خارج از متن.
     2. عدم استفاده از ستاره (*) یا تگ HTML در متون.
-    3. لحن کوتاه ژورنالیستی.
+    3. لحن کوتاه و حرفه‌ای ژورنالیستی.
 
-    اخبار:
+    اخبار ورودی:
     {news_text}
     """
 
-    # لیست مدل‌های معتبر جهت تلاش مجدد و عبور از شلوغی سرور
-    candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+    model_name = "gemini-3.8-flash"
+    max_retries = 4
 
-    for model_name in candidate_models:
-        for attempt in range(2):  # تلاش مجدد در صورت ترافیک سنگین ۵۰۳
-            try:
-                print(f"🧠 پردازش با {model_name} (تلاش {attempt + 1})...")
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=AnalyzedNewsBatch,
-                        temperature=0.2,
-                    ),
-                )
-                parsed_data = json.loads(response.text)
-                selected = parsed_data.get("selected_news", [])
-                if selected:
-                    return selected
-            except Exception as e:
-                print(f"⚠️ خطای مدل {model_name}: {e}")
-                time.sleep(2)  # صبر کوتاه قبل از تلاش مجدد یا تغییر مدل
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"🧠 پردازش با {model_name} (تلاش {attempt}/{max_retries})...")
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=AnalyzedNewsBatch,
+                    temperature=0.2,
+                ),
+            )
+            
+            raw_text = response.text.strip()
+            # پاکسازی ایمن تگ‌های احتمالی مارک‌داون دور جیسون
+            if raw_text.startswith("```"):
+                raw_text = re.sub(r"^```(?:json)?\n?", "", raw_text)
+                raw_text = re.sub(r"\n?```$", "", raw_text)
+                raw_text = raw_text.strip()
+
+            parsed_data = json.loads(raw_text)
+            selected = parsed_data.get("selected_news", [])
+            if selected:
+                return selected
+        except Exception as e:
+            print(f"⚠️ خطای تلاش {attempt}: {e}")
+            if attempt < max_retries:
+                sleep_time = attempt * 3
+                print(f"⏳ استراحت {sleep_time} ثانیه‌ای پیش از تلاش مجدد...")
+                time.sleep(sleep_time)
 
     return []
 
@@ -213,11 +227,12 @@ def format_post(item, source_name):
     clean_tags = [f"#{t.strip().lstrip('#').replace(' ', '_')}" for t in raw_tags[:3] if t.strip()]
     hashtags_str = " ".join(clean_tags) if clean_tags else "#خبر #فناوری"
 
+    # ساختار متن بدون هیچ‌گونه ستاره یا فرمت مارک‌داون مخرب برای ایتا
     return f"📌 {title}\n\n📝 خلاصه:\n{summary}\n\n💡 چرا مهم است؟\n{why_imp}\n\n🏷 {hashtags_str}\n📡 منبع: {source_name}\n🆔 @{CHANNEL}"
 
 
 def send_to_eitaa(text):
-    url = f"https://eitaayar.ir/api/{EITAA_TOKEN}/sendMessage"
+    url = f"[https://eitaayar.ir/api/](https://eitaayar.ir/api/){EITAA_TOKEN}/sendMessage"
     try:
         resp = requests.post(url, data={"chat_id": CHANNEL, "text": text}, timeout=10)
         if resp.status_code == 200:
@@ -225,7 +240,7 @@ def send_to_eitaa(text):
             if res_json.get("ok") is True:
                 return True
             else:
-                print(f"⚠️ خطای ایتاپیر در ارسال: {res_json}")
+                print(f"⚠️ خطای ایتاپیر در پاسخ: {res_json}")
         else:
             print(f"⚠️ خطای HTTP از ایتاپیر: {resp.status_code}")
         return False
@@ -235,7 +250,7 @@ def send_to_eitaa(text):
 
 
 def main():
-    print("🚀 شروع اجرای فوق‌سریع ربات...")
+    print("🚀 شروع اجرای فوق‌سریع و هوشمند ربات...")
     seen_list = load_seen()
     all_new_articles = fetch_new_articles(seen_list)
 
@@ -251,24 +266,28 @@ def main():
         return 0
 
     sent_count = 0
+    successfully_sent_links = []
+
     for item in selected_items[:3]:
         idx = item.get("index")
         if idx is not None and 0 <= idx < len(batch_articles):
-            post_text = format_post(item, batch_articles[idx]["source"])
+            art = batch_articles[idx]
+            post_text = format_post(item, art["source"])
             if send_to_eitaa(post_text):
                 sent_count += 1
+                successfully_sent_links.append(art["link"])
                 print(f"✅ خبر شماره {idx} با موفقیت به ایتا ارسال شد.")
                 time.sleep(2)
             else:
                 print(f"❌ ارسال خبر شماره {idx} ناموفق بود.")
 
-    if sent_count > 0:
-        for art in batch_articles:
-            seen_list.append(art["link"])
+    # ذخیره سابقه فقط برای اخبار ارسال‌شده (جهت جلوگیری از گم شدن اخبار در صورت خطای موقت ایتا)
+    if successfully_sent_links:
+        seen_list.extend(successfully_sent_links)
         save_seen(seen_list)
         print(f"✅ مجموعاً {sent_count} پست با موفقیت منتشر و سابقه ذخیره شد.")
     else:
-        print("⚠️ هیچ پستی با موفقیت ارسال نشد.")
+        print("⚠️ هیچ پستی با موفقیت ارسال نشد، سابقه آپدیت نشد.")
 
     return 0
 
