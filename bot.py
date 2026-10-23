@@ -12,6 +12,10 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
+# غیرفعال کردن هشدارهای SSL برای جلوگیری از خطای گواهی در سایت‌های داخلی
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 BASE_DIR = Path(__file__).resolve().parent
 SEEN_FILE = BASE_DIR / "seen.json"
 
@@ -30,17 +34,12 @@ CHANNEL = (
     .strip()
 )
 
-# لیست منابع فید RSS (زومیت حذف و فارس جایگزین شد)
+# لیست منابع فید RSS شامل تکنولوژی، ورزش، بین‌الملل و سیاست
 RSS_FEEDS = [
     {
         "name": "تک‌کرانچ (هوش مصنوعی)",
         "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
-        "category": "تکنولوژی و هوش مصنوعی جهانی",
-    },
-    {
-        "name": "خبرگزاری فارس",
-        "url": "https://www.farsnews.ir/rss",
-        "category": "اخبار و فناوری",
+        "category": "تکنولوژی و هوش مصنوعی",
     },
     {
         "name": "دیجیاتو",
@@ -48,14 +47,19 @@ RSS_FEEDS = [
         "category": "تکنولوژی و فناوری",
     },
     {
-        "name": "الجزیره (بین‌الملل)",
-        "url": "https://www.aljazeera.com/xml/rss/all.xml",
-        "category": "اخبار جهانی و تحولات سیاسی/جنگ",
+        "name": "ورزش سه",
+        "url": "https://www.varzesh3.com/rss",
+        "category": "ورزش",
     },
     {
-        "name": "خبرگزاری مهر (فناوری)",
-        "url": "https://www.mehrnews.com/rss/tp/5",
-        "category": "علم و فناوری",
+        "name": "الجزیره (بین‌الملل و جنگ)",
+        "url": "https://www.aljazeera.com/xml/rss/all.xml",
+        "category": "بین‌الملل و سیاست",
+    },
+    {
+        "name": "خبرگزاری فارس",
+        "url": "https://www.farsnews.ir/rss",
+        "category": "سیاست و اخبار عمومی",
     },
 ]
 
@@ -69,7 +73,7 @@ class AnalyzedNewsItem(BaseModel):
 
 
 class AnalyzedNewsBatch(BaseModel):
-    selected_news: list[AnalyzedNewsItem] = Field(description="لیست ۱ تا ۳ خبر برتر")
+    selected_news: list[AnalyzedNewsItem] = Field(description="لیست ۳ خبر برتر با تفکیک موضوعی")
 
 
 def normalize_link(url):
@@ -103,12 +107,16 @@ def fetch_single_feed(feed_info, seen_set):
     feed_articles = []
     try:
         print(f"⏳ دریافت هم‌زمان: {feed_info['name']}...")
-        resp = requests.get(feed_info["url"], headers=headers, timeout=5)
+        try:
+            resp = requests.get(feed_info["url"], headers=headers, timeout=5)
+        except requests.exceptions.SSLError:
+            resp = requests.get(feed_info["url"], headers=headers, timeout=5, verify=False)
+
         if resp.status_code != 200:
             return []
         
         feed = feedparser.parse(resp.content)
-        for entry in feed.entries[:3]:
+        for entry in feed.entries[:4]:
             raw_link = entry.get("link", "").strip()
             norm_link = normalize_link(raw_link)
             title = clean_html(entry.get("title", ""))
@@ -154,9 +162,13 @@ def select_and_analyze(articles):
     news_text = ""
 
     for i, art in enumerate(articles):
-        news_text += f"[{i}] منبع: {art['source']} | تیتر: {art['title']}\nمتن: {art['summary']}\n---\n"
+        news_text += f"[{i}] منبع: {art['source']} | دسته‌بندی: {art['category']} | تیتر: {art['title']}\nمتن: {art['summary']}\n---\n"
 
-    prompt = f"""نقش: سردبیر «عدل نیوز». انتخاب ۱ تا ۳ خبر برتر و خلاصه روان فارسی.
+    # دستورالعمل دقیق برای تفکیک موضوعی ۳ پست خروجی
+    prompt = f"""نقش: سردبیر «عدل نیوز». شما باید دقیقاً ۳ خبر برتر را از بین اخبار زیر انتخاب کنید، به طوری که تفکیک موضوعی زیر به دقت رعایت شود:
+    1. یک خبر حتماً درباره «تکنولوژی و هوش مصنوعی (AI)» باشد.
+    2. یک خبر حتماً درباره «ورزش» باشد.
+    3. یک خبر حتماً درباره «جنگ، مسائل بین‌الملل یا سیاست» باشد.
 
     قوانین:
     1. بدون حدس و اطلاعات خارج از متن.
@@ -196,7 +208,6 @@ def format_post(item, source_name):
     clean_tags = [f"#{t.strip().lstrip('#').replace(' ', '_')}" for t in raw_tags[:3] if t.strip()]
     hashtags_str = " ".join(clean_tags) if clean_tags else "#خبر #فناوری"
 
-    # متن کاملاً ساده و بدون علامت بولد برای جلوگیری از به هم‌ریختگی در ایتا
     return f"📌 {title}\n\n📝 خلاصه:\n{summary}\n\n💡 چرا مهم است؟\n{why_imp}\n\n🏷 {hashtags_str}\n📡 منبع: {source_name}\n🆔 @{CHANNEL}"
 
 
@@ -227,7 +238,7 @@ def main():
         print("📭 خبر جدیدی یافت نشد.")
         return 0
 
-    batch_articles = all_new_articles[:15]
+    batch_articles = all_new_articles[:25]
     selected_items = select_and_analyze(batch_articles)
 
     if not selected_items:
