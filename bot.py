@@ -1,9 +1,9 @@
 import json
 import os
 import re
-import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import feedparser
@@ -11,15 +11,6 @@ import requests
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
-
-# تنظیم تایم‌اوت کل برنامه (حداکثر ۶۰ ثانیه برای جلوگیری از معطلی در گیت‌هاب)
-def timeout_handler(signum, frame):
-    print("⏰ زمان اجرای اسکریپت به پایان رسید (Timeout 60s). خروج جهت جلوگیری از گیر کردن.")
-    sys.exit(0)
-
-if hasattr(signal, "SIGALRM"):
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(60)
 
 BASE_DIR = Path(__file__).resolve().parent
 SEEN_FILE = BASE_DIR / "seen.json"
@@ -29,7 +20,7 @@ EITAA_TOKEN = os.environ.get("EITAA_TOKEN", "").strip()
 CHANNEL = os.environ.get("CHANNEL", "").strip()
 
 if not all([GEMINI_KEY, EITAA_TOKEN, CHANNEL]):
-    print("❌ خطای تنظیمات: متغیرها به درستی وارد نشده‌اند.")
+    print("❌ خطای تنظیمات: متغیرهای محیطی GEMINI_KEY، EITAA_TOKEN یا CHANNEL تنظیم نشده‌اند.")
     sys.exit(1)
 
 CHANNEL = (
@@ -39,6 +30,7 @@ CHANNEL = (
     .strip()
 )
 
+# لیست منابع فید RSS (زومیت حذف و فارس جایگزین شد)
 RSS_FEEDS = [
     {
         "name": "تک‌کرانچ (هوش مصنوعی)",
@@ -46,9 +38,9 @@ RSS_FEEDS = [
         "category": "تکنولوژی و هوش مصنوعی جهانی",
     },
     {
-        "name": "زومیت",
-        "url": "https://www.zoomit.ir/feed/",
-        "category": "تکنولوژی و هوش مصنوعی",
+        "name": "خبرگزاری فارس",
+        "url": "https://www.farsnews.ir/rss",
+        "category": "اخبار و فناوری",
     },
     {
         "name": "دیجیاتو",
@@ -106,40 +98,50 @@ def clean_html(raw_html):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def fetch_single_feed(feed_info, seen_set):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    feed_articles = []
+    try:
+        print(f"⏳ دریافت هم‌زمان: {feed_info['name']}...")
+        resp = requests.get(feed_info["url"], headers=headers, timeout=5)
+        if resp.status_code != 200:
+            return []
+        
+        feed = feedparser.parse(resp.content)
+        for entry in feed.entries[:3]:
+            raw_link = entry.get("link", "").strip()
+            norm_link = normalize_link(raw_link)
+            title = clean_html(entry.get("title", ""))
+            summary = clean_html(entry.get("summary", entry.get("description", "")))
+
+            if norm_link and title and norm_link not in seen_set:
+                feed_articles.append(
+                    {
+                        "source": feed_info["name"],
+                        "category": feed_info["category"],
+                        "title": title,
+                        "summary": summary[:350] if summary else title,
+                        "link": norm_link,
+                    }
+                )
+    except Exception as e:
+        print(f"⚡ عبور سریع از {feed_info['name']} به دلیل خطا یا کندی: {e}")
+    return feed_articles
+
+
 def fetch_new_articles(seen_list):
     seen_set = set(seen_list)
     articles = []
     batch_links = set()
 
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-
-    for feed_info in RSS_FEEDS:
-        try:
-            print(f"⏳ دریافت فید: {feed_info['name']}...")
-            resp = requests.get(feed_info["url"], headers=headers, timeout=4)
-            if resp.status_code != 200:
-                continue
-            feed = feedparser.parse(resp.content)
-
-            for entry in feed.entries[:3]:
-                raw_link = entry.get("link", "").strip()
-                norm_link = normalize_link(raw_link)
-                title = clean_html(entry.get("title", ""))
-                summary = clean_html(entry.get("summary", entry.get("description", "")))
-
-                if norm_link and title and norm_link not in seen_set and norm_link not in batch_links:
-                    batch_links.add(norm_link)
-                    articles.append(
-                        {
-                            "source": feed_info["name"],
-                            "category": feed_info["category"],
-                            "title": title,
-                            "summary": summary[:350] if summary else title,
-                            "link": norm_link,
-                        }
-                    )
-        except Exception:
-            print(f"⚡ عبور سریع از {feed_info['name']}")
+    with ThreadPoolExecutor(max_workers=len(RSS_FEEDS)) as executor:
+        futures = {executor.submit(fetch_single_feed, feed, seen_set): feed for feed in RSS_FEEDS}
+        for future in as_completed(futures):
+            res = future.result()
+            for art in res:
+                if art["link"] not in batch_links:
+                    batch_links.add(art["link"])
+                    articles.append(art)
 
     return articles
 
@@ -194,49 +196,66 @@ def format_post(item, source_name):
     clean_tags = [f"#{t.strip().lstrip('#').replace(' ', '_')}" for t in raw_tags[:3] if t.strip()]
     hashtags_str = " ".join(clean_tags) if clean_tags else "#خبر #فناوری"
 
-    # متن کاملاً ساده و بدون هیچ‌گونه علامت بولد یا مارک‌داون اضافی
+    # متن کاملاً ساده و بدون علامت بولد برای جلوگیری از به هم‌ریختگی در ایتا
     return f"📌 {title}\n\n📝 خلاصه:\n{summary}\n\n💡 چرا مهم است؟\n{why_imp}\n\n🏷 {hashtags_str}\n📡 منبع: {source_name}\n🆔 @{CHANNEL}"
 
 
 def send_to_eitaa(text):
     url = f"https://eitaayar.ir/api/{EITAA_TOKEN}/sendMessage"
     try:
-        resp = requests.post(url, data={"chat_id": CHANNEL, "text": text}, timeout=8)
-        return resp.status_code == 200 and resp.json().get("ok") is True
-    except Exception:
+        resp = requests.post(url, data={"chat_id": CHANNEL, "text": text}, timeout=10)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            if res_json.get("ok") is True:
+                return True
+            else:
+                print(f"⚠️ خطای ایتاپیر در ارسال: {res_json}")
+        else:
+            print(f"⚠️ خطای HTTP از ایتاپیر: {resp.status_code}")
+        return False
+    except Exception as e:
+        print(f"⚠️ خطا در ارتباط با ایتا: {e}")
         return False
 
 
 def main():
-    print("🚀 شروع اجرای ربات...")
+    print("🚀 شروع اجرای فوق‌سریع ربات...")
     seen_list = load_seen()
     all_new_articles = fetch_new_articles(seen_list)
 
     if not all_new_articles:
         print("📭 خبر جدیدی یافت نشد.")
-        return
+        return 0
 
     batch_articles = all_new_articles[:15]
     selected_items = select_and_analyze(batch_articles)
 
     if not selected_items:
-        print("⚠️ خبری انتخاب نشد.")
-        return
+        print("⚠️ خبری توسط هوش مصنوعی انتخاب نشد.")
+        return 0
 
     sent_count = 0
     for item in selected_items[:3]:
         idx = item.get("index")
         if idx is not None and 0 <= idx < len(batch_articles):
-            if send_to_eitaa(format_post(item, batch_articles[idx]["source"])):
+            post_text = format_post(item, batch_articles[idx]["source"])
+            if send_to_eitaa(post_text):
                 sent_count += 1
+                print(f"✅ خبر شماره {idx} با موفقیت به ایتا ارسال شد.")
                 time.sleep(2)
+            else:
+                print(f"❌ ارسال خبر شماره {idx} ناموفق بود.")
 
     if sent_count > 0:
         for art in batch_articles:
             seen_list.append(art["link"])
         save_seen(seen_list)
-        print(f"✅ {sent_count} پست منتشر و ذخیره شد.")
+        print(f"✅ مجموعاً {sent_count} پست با موفقیت منتشر و سابقه ذخیره شد.")
+    else:
+        print("⚠️ هیچ پستی با موفقیت ارسال نشد.")
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
