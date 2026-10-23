@@ -33,7 +33,13 @@ CHANNEL = (
     .strip()
 )
 
+# لیست منابع خبری کامل (فناوری، هوش مصنوعی جهانی، بین‌الملل و عمومی)
 RSS_FEEDS = [
+    {
+        "name": "تک‌کرانچ (مرجع جهانی AI)",
+        "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
+        "category": "تحلیل و اخبار اختصاصی هوش مصنوعی",
+    },
     {
         "name": "زومیت",
         "url": "https://www.zoomit.ir/feed/",
@@ -45,9 +51,19 @@ RSS_FEEDS = [
         "category": "تکنولوژی و هوش مصنوعی",
     },
     {
-        "name": "تسنیم (فناوری)",
-        "url": "https://www.tasnimnews.com/fa/rss/feed/0/7/82/%D9%81%D9%86%D8%A7%D9%88%D8%B1%DB%8C-%D8%A7%D8%B7%D9%84%D8%A7%D8%B9%D8%A7%D8%AA",
-        "category": "تکنولوژی",
+        "name": "الجزیره (بین‌الملل)",
+        "url": "https://www.aljazeera.com/xml/rss/all.xml",
+        "category": "اخبار فوری و تحلیل سیاسی/جنگ",
+    },
+    {
+        "name": "رویترز (اخبار جهان)",
+        "url": "https://www.reutersagency.com/feed/?best-topics=world&post_type=best",
+        "category": "اخبار جهانی و فوری",
+    },
+    {
+        "name": "ایسنا (علمی و عمومی)",
+        "url": "https://www.isna.ir/rss/ns/26",
+        "category": "اطلاعات عمومی، علمی و فناوری",
     },
     {
         "name": "خبرگزاری مهر (فناوری)",
@@ -59,22 +75,17 @@ RSS_FEEDS = [
         "url": "https://www.tasnimnews.com/fa/rss/feed/0/7/1/%D8%B3%DB%8C%D8%A7%D8%B3%DB%8C",
         "category": "سیاسی",
     },
-    {
-        "name": "خبرگزاری مهر (سیاسی)",
-        "url": "https://www.mehrnews.com/rss/tp/7",
-        "category": "سیاسی",
-    },
 ]
 
 
 class AnalyzedNewsItem(BaseModel):
     index: int = Field(description="شماره ردیف خبر انتخاب شده از لیست ورودی")
-    title: str = Field(description="تیتر جذاب، دقیق و کاملا وفادار به متن خبر")
+    title: str = Field(description="تیتر جذاب، دقیق و کاملا وفادار به متن خبر (به زبان فارسی)")
     summary: str = Field(
-        description="خلاصه دقیق و روان در ۲ تا ۳ جمله کوتاه فقط بر اساس متن خبر"
+        description="خلاصه دقیق و روان در ۲ تا ۳ جمله کوتاه به زبان فارسی روان"
     )
     why_important: str = Field(
-        description="تحلیل کوتاه در ۱ یا ۲ جمله که چرا این خبر مهم است، بدون حدس یا اطلاعات خارج از متن"
+        description="تحلیل کوتاه در ۱ یا ۲ جمله که چرا این خبر مهم است (به زبان فارسی)"
     )
     hashtags: list[str] = Field(
         description="دقیقا ۳ هشتگ مرتبط به زبان فارسی (کلمات با خط زیر جدا شوند، مثال: هوش_مصنوعی)"
@@ -194,25 +205,24 @@ def select_and_analyze(articles):
             f"---\n"
         )
 
-    prompt = f"""
-    تو سردبیر ارشد کانال خبری-تحلیلی «عدل نیوز» هستی.
-    از لیست اخبار زیر، بین ۱ تا ۳ خبر که بیشترین اهمیت و جذابیت را دارند انتخاب کن.
+    # پرامپت فوق‌العاده بهینه، متراکم و صرفه‌جویانه در مصرف توکن
+    prompt = f"""نقش: سردبیر ارشد «عدل نیوز». وظیفه: انتخاب ۱ تا ۳ خبر برتر از لیست زیر، ترجمه روان (برای منابع انگلیسی) و خلاصه استاندارد به فارسی.
 
-    اولویت‌بندی انتخاب:
-    - اولویت اصلی با اخبار «هوش مصنوعی (AI) و تکنولوژی‌های نوین» است (۱ تا ۲ خبر).
-    - در کنار آن، مهم‌ترین و اثرگذارترین خبر «سیاسی یا علمی روز» را هم انتخاب کن (۱ خبر).
+    توازن در انتخاب:
+    - فناوری و هوش مصنوعی (تک‌کرانچ، زومیت، دیجیاتو)
+    - بین‌الملل و تحولات (الجزیره، رویترز)
+    - عمومی، علمی و روز (ایسنا، مهر، تسنیم)
 
     قوانین سخت‌گیرانه:
-    1. به هیچ وجه اطلاعات، آمار، نام افراد یا تحلیلی که در متن خبر نیست از خودت اضافه نکن.
-    2. اگر متن کوتاه یک خبر اطلاعات کافی ندارد، فقط بر اساس همان اطلاعات موجود بنویس و چیزی حدس نزن.
-    3. از نوشتن ستاره (**) یا تگ‌های HTML داخل متن‌ها خودداری کن.
-    4. جملات باید روان، رسمی، ژورنالیستی و کوتاه باشند تا کل پست نهایی زیر ۷۵۰ کاراکتر جا شود.
+    1. استناد صددرصدی به متن؛ بدون حدس، آمار یا اطلاعات خارج از متن.
+    2. ممنوعیت استفاده از ستاره (**) یا تگ‌های HTML در متن‌ها.
+    3. لحن کاملاً ژورنالیستی، کوتاه و متناسب با محدودیت ۷۵۰ کاراکتر پست.
+    4. استفاده دقیق از ایندکس عددی خبر `[index]` در خروجی.
 
     لیست اخبار ورودی:
     {news_text}
     """
 
-    # به‌روزرسانی مدل‌ها به نسخه‌های فعال و رسمی
     models_to_try = ["gemini-3.8-flash", "gemini-1.5-flash"]
     for model_name in models_to_try:
         for attempt in range(1, 3):
@@ -248,13 +258,14 @@ def format_post(item, source_name):
         if t_clean:
             clean_tags.append(f"#{t_clean}")
 
-    hashtags_str = " ".join(clean_tags) if clean_tags else "#فناوری #اخبار_روز"
+    hashtags_str = " ".join(clean_tags) if clean_tags else "#فناوری #بین_الملل #اخبار_روز"
+    
+    # استفاده از تگ‌های HTML برای بولد کردن در ایتا
+    header = f"<b>📌 {title}</b>\n\n"
+    body = f"<b>📝 خلاصه:</b>\n{summary}\n\n<b>💡 چرا مهم است؟</b>\n{why_imp}"
     footer = f"\n\n🏷 {hashtags_str}\n📡 منبع: {source_name}\n🆔 @{CHANNEL}"
-    header = f"📌 {title}\n\n"
 
     max_body_len = 780 - len(header) - len(footer)
-    body = f"📝 خلاصه:\n{summary}\n\n💡 چرا مهم است؟\n{why_imp}"
-
     if len(body) > max_body_len:
         body = body[: max_body_len - 3].rsplit(" ", 1)[0] + "..."
 
@@ -263,7 +274,7 @@ def format_post(item, source_name):
 
 def send_to_eitaa(text):
     url = f"https://eitaayar.ir/api/{EITAA_TOKEN}/sendMessage"
-    payload = {"chat_id": CHANNEL, "text": text}
+    payload = {"chat_id": CHANNEL, "text": text, "parse_mode": "HTML"}
 
     try:
         response = HTTP_SESSION.post(url, data=payload, timeout=20)
@@ -303,7 +314,7 @@ def main():
         print("📭 هیچ خبر جدیدی از آخرین اجرا تا الان منتشر نشده است. پایان کار.")
         return 0
 
-    batch_articles = all_new_articles[:24]
+    batch_articles = all_new_articles[:28]
     print(f"🔍 تعداد {len(batch_articles)} خبر جدید دریافت شد. در حال تحلیل توسط Gemini...")
 
     selected_items = select_and_analyze(batch_articles)
