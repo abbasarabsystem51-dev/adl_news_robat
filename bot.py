@@ -3,26 +3,29 @@ import os
 import re
 import sys
 import time
+from pathlib import Path
+
 import feedparser
+import requests
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
-import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# ۱. دریافت و اعتبارسنجی متغیرهای محیطی (Secrets)
+BASE_DIR = Path(__file__).resolve().parent
+SEEN_FILE = BASE_DIR / "seen.json"
+
 GEMINI_KEY = os.environ.get("GEMINI_KEY", "").strip()
 EITAA_TOKEN = os.environ.get("EITAA_TOKEN", "").strip()
 CHANNEL = os.environ.get("CHANNEL", "").strip()
 
 if not all([GEMINI_KEY, EITAA_TOKEN, CHANNEL]):
     print(
-        "❌ خطای تنظیمات: یکی از متغیرهای GEMINI_KEY یا EITAA_TOKEN یا CHANNEL در بخش Secrets گیت‌هاب وارد نشده است!"
+        "❌ خطای تنظیمات: یکی از متغیرهای GEMINI_KEY، EITAA_TOKEN یا CHANNEL در Secrets GitHub وارد نشده است."
     )
-    sys.exit(1)
+    raise SystemExit(1)
 
-# استانداردسازی آیدی کانال
 CHANNEL = (
     CHANNEL.replace("https://eitaa.com/", "")
     .replace("http://eitaa.com/", "")
@@ -30,7 +33,6 @@ CHANNEL = (
     .strip()
 )
 
-# ۲. منابع خبری (ترکیب متوازن تکنولوژی/AI و اخبار مهم سیاسی-عمومی)
 RSS_FEEDS = [
     {
         "name": "زومیت",
@@ -64,10 +66,7 @@ RSS_FEEDS = [
     },
 ]
 
-SEEN_FILE = "seen.json"
 
-
-# ۳. تعریف ساختار دقیق خروجی هوش مصنوعی (جلوگیری ۱۰۰٪ از بهم‌ریختگی قالب)
 class AnalyzedNewsItem(BaseModel):
     index: int = Field(description="شماره ردیف خبر انتخاب شده از لیست ورودی")
     title: str = Field(description="تیتر جذاب، دقیق و کاملا وفادار به متن خبر")
@@ -88,7 +87,6 @@ class AnalyzedNewsBatch(BaseModel):
     )
 
 
-# ۴. ساخت نشست شبکه (Session) با قابلیت تلاش مجدد و هدر مرورگر واقعی
 def create_http_session():
     session = requests.Session()
     retry_strategy = Retry(
@@ -114,26 +112,25 @@ HTTP_SESSION = create_http_session()
 
 
 def normalize_link(url):
-    """حذف پارامترهای اضافی لینک برای جلوگیری از ثبت خبر تکراری"""
     return url.split("?")[0].rstrip("/").strip()
 
 
 def load_seen():
-    if os.path.exists(SEEN_FILE):
-        try:
-            with open(SEEN_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data if isinstance(data, list) else []
-        except Exception as e:
-            print(f"⚠️ هشدار در خواندن {SEEN_FILE}: {e} - شروع با لیست خالی.")
-            return []
-    return []
+    if not SEEN_FILE.exists():
+        return []
+
+    try:
+        with SEEN_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"⚠️ هشدار در خواندن {SEEN_FILE.name}: {e} - شروع با لیست خالی.")
+        return []
 
 
 def save_seen(seen_list):
-    # حذف موارد تکراری با حفظ ترتیب و نگهداری ۵۰۰ مورد آخر
     unique_seen = list(dict.fromkeys(seen_list))
-    with open(SEEN_FILE, "w", encoding="utf-8") as f:
+    with SEEN_FILE.open("w", encoding="utf-8") as f:
         json.dump(unique_seen[-500:], f, ensure_ascii=False, indent=2)
 
 
@@ -150,7 +147,7 @@ def fetch_new_articles(seen_list):
 
     for feed_info in RSS_FEEDS:
         try:
-            resp = HTTP_SESSION.get(feed_info["url"], timeout=15)
+            resp = HTTP_SESSION.get(feed_info["url"], timeout=20)
             resp.raise_for_status()
             feed = feedparser.parse(resp.content)
 
@@ -158,9 +155,7 @@ def fetch_new_articles(seen_list):
                 raw_link = entry.get("link", "").strip()
                 norm_link = normalize_link(raw_link)
                 title = clean_html(entry.get("title", ""))
-                summary = clean_html(
-                    entry.get("summary", entry.get("description", ""))
-                )
+                summary = clean_html(entry.get("summary", entry.get("description", "")))
 
                 if (
                     norm_link
@@ -185,9 +180,12 @@ def fetch_new_articles(seen_list):
 
 
 def select_and_analyze(articles):
-    client = genai.Client(api_key=GEMINI_KEY)
+    if not articles:
+        return []
 
+    client = genai.Client(api_key=GEMINI_KEY)
     news_text = ""
+
     for i, art in enumerate(articles):
         news_text += (
             f"[{i}] منبع: {art['source']} | دسته: {art['category']}\n"
@@ -197,22 +195,22 @@ def select_and_analyze(articles):
         )
 
     prompt = f"""
-تو سردبیر ارشد کانال خبری-تحلیلی «عدل نیوز» هستی.
-از لیست اخبار زیر، بین ۱ تا ۳ خبر که بیشترین اهمیت و جذابیت را دارند انتخاب کن.
+    تو سردبیر ارشد کانال خبری-تحلیلی «عدل نیوز» هستی.
+    از لیست اخبار زیر، بین ۱ تا ۳ خبر که بیشترین اهمیت و جذابیت را دارند انتخاب کن.
 
-اولویت‌بندی انتخاب:
-- اولویت اصلی با اخبار «هوش مصنوعی (AI) و تکنولوژی‌های نوین» است (۱ تا ۲ خبر).
-- در کنار آن، مهم‌ترین و اثرگذارترین خبر «سیاسی یا علمی روز» را هم انتخاب کن (۱ خبر).
+    اولویت‌بندی انتخاب:
+    - اولویت اصلی با اخبار «هوش مصنوعی (AI) و تکنولوژی‌های نوین» است (۱ تا ۲ خبر).
+    - در کنار آن، مهم‌ترین و اثرگذارترین خبر «سیاسی یا علمی روز» را هم انتخاب کن (۱ خبر).
 
-قوانین سخت‌گیرانه (خط قرمز):
-1. به هیچ وجه اطلاعات، آمار، نام افراد یا تحلیلی که در متن خبر نیست از خودت اضافه نکن (صفر درصد توهم).
-2. اگر متن کوتاه یک خبر اطلاعات کافی ندارد، فقط بر اساس همان اطلاعات موجود بنویس و چیزی حدس نزن.
-3. از نوشتن ستاره (**) یا تگ‌های HTML در داخل متن‌ها خودداری کن.
-4. جملات باید روان، رسمی، ژورنالیستی و کوتاه باشند تا کل پست نهایی زیر ۷۵۰ کاراکتر جا شود.
+    قوانین سخت‌گیرانه:
+    1. به هیچ وجه اطلاعات، آمار، نام افراد یا تحلیلی که در متن خبر نیست از خودت اضافه نکن.
+    2. اگر متن کوتاه یک خبر اطلاعات کافی ندارد، فقط بر اساس همان اطلاعات موجود بنویس و چیزی حدس نزن.
+    3. از نوشتن ستاره (**) یا تگ‌های HTML داخل متن‌ها خودداری کن.
+    4. جملات باید روان، رسمی، ژورنالیستی و کوتاه باشند تا کل پست نهایی زیر ۷۵۰ کاراکتر جا شود.
 
-لیست اخبار ورودی:
-{news_text}
-"""
+    لیست اخبار ورودی:
+    {news_text}
+    """
 
     models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
     for model_name in models_to_try:
@@ -224,23 +222,20 @@ def select_and_analyze(articles):
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=AnalyzedNewsBatch,
-                        temperature=0.2,  # دمای پایین برای جلوگیری از خیال‌پردازی و توهم
+                        temperature=0.2,
                     ),
                 )
                 parsed_data = json.loads(response.text)
                 return parsed_data.get("selected_news", [])
             except Exception as e:
-                print(
-                    f"⚠️ تلاش {attempt} با مدل {model_name} ناموفق بود: {e}"
-                )
+                print(f"⚠️ تلاش {attempt} با مدل {model_name} ناموفق بود: {e}")
                 time.sleep(4)
 
     print("❌ خطای بحرانی: ارتباط با سرورهای Gemini پس از چندین تلاش برقرار نشد.")
-    sys.exit(1)
+    return []
 
 
 def format_post(item, source_name):
-    """مونتاژ امن پست در پایتون به شکلی که هرگز زیر ۸۰۰ کاراکتر قطع نشود"""
     title = item.get("title", "").replace("*", "").strip()
     summary = item.get("summary", "").replace("*", "").strip()
     why_imp = item.get("why_important", "").replace("*", "").strip()
@@ -251,17 +246,15 @@ def format_post(item, source_name):
         t_clean = t.strip().lstrip("#").replace(" ", "_")
         if t_clean:
             clean_tags.append(f"#{t_clean}")
-    hashtags_str = " ".join(clean_tags) if clean_tags else "#فناوری #اخبار_روز"
 
+    hashtags_str = " ".join(clean_tags) if clean_tags else "#فناوری #اخبار_روز"
     footer = f"\n\n🏷 {hashtags_str}\n📡 منبع: {source_name}\n🆔 @{CHANNEL}"
     header = f"📌 {title}\n\n"
 
-    # محاسبه فضای باقی‌مانده برای بدنه تا کل پست همیشه زیر ۷۸۰ کاراکتر بماند
     max_body_len = 780 - len(header) - len(footer)
-
     body = f"📝 خلاصه:\n{summary}\n\n💡 چرا مهم است؟\n{why_imp}"
+
     if len(body) > max_body_len:
-        # کوتاه کردن هوشمند بدنه بدون آسیب زدن به فوتر (منبع و آیدی کانال)
         body = body[: max_body_len - 3].rsplit(" ", 1)[0] + "..."
 
     return f"{header}{body}{footer}"
@@ -269,10 +262,7 @@ def format_post(item, source_name):
 
 def send_to_eitaa(text):
     url = f"https://eitaayar.ir/api/{EITAA_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHANNEL,
-        "text": text,
-    }
+    payload = {"chat_id": CHANNEL, "text": text}
 
     try:
         response = HTTP_SESSION.post(url, data=payload, timeout=20)
@@ -280,9 +270,7 @@ def send_to_eitaa(text):
         if response.status_code != 200:
             print(f"❌ خطا از سمت سرور ایتایار (کد وضعیت HTTP: {response.status_code})")
             if response.status_code == 403:
-                print(
-                    "💡 علت خطا: فایروال ایتایار دسترسی سرور خارج از کشور (GitHub) را مسدود کرده است."
-                )
+                print("💡 علت خطا: فایروال ایتایار دسترسی سرور خارج از کشور (GitHub) را مسدود کرده است.")
             print(f"پاسخ خام سرور: {response.text[:300]}")
             return False
 
@@ -290,24 +278,15 @@ def send_to_eitaa(text):
         if data.get("ok") is True:
             print("✅ پست با موفقیت در کانال ایتا منتشر شد!")
             return True
-        else:
-            print(f"❌ API ایتایار پیام را رد کرد: {data}")
-            print(
-                "💡 بررسی کنید: ۱) توکن ایتایار صحیح باشد ۲) بات ایتایار در کانال ادمین باشد ۳) آیدی کانال درست باشد."
-            )
-            return False
 
-    except requests.exceptions.ConnectTimeout:
+        print(f"❌ API ایتایار پیام را رد کرد: {data}")
+        return False
+
+    except requests.exceptions.Timeout:
         print("❌ خطای Timeout: اتصال به سرور eitaayar.ir بیش از حد طول کشید.")
-        print(
-            "💡 علت احتمالی: مسدود بودن موقت IPهای خارج از کشور روی سرورهای ایتایار."
-        )
         return False
     except requests.exceptions.ConnectionError as e:
         print(f"❌ خطای شبکه در اتصال به ایتایار: {e}")
-        print(
-            "💡 علت احتمالی: فایروال شبکه داخلی ایران ارتباط از سرور GitHub را قطع کرده است."
-        )
         return False
     except Exception as e:
         print(f"❌ خطای پیش‌بینی‌نشده در ارسال به ایتا: {e}")
@@ -321,19 +300,16 @@ def main():
 
     if not all_new_articles:
         print("📭 هیچ خبر جدیدی از آخرین اجرا تا الان منتشر نشده است. پایان کار.")
-        return
+        return 0
 
-    # انتخاب حداکثر ۲۴ خبر اول برای ارسال به هوش مصنوعی
     batch_articles = all_new_articles[:24]
-    print(
-        f"🔍 تعداد {len(batch_articles)} خبر جدید دریافت شد. در حال تحلیل توسط Gemini..."
-    )
+    print(f"🔍 تعداد {len(batch_articles)} خبر جدید دریافت شد. در حال تحلیل توسط Gemini...")
 
     selected_items = select_and_analyze(batch_articles)
 
     if not selected_items:
         print("⚠️ هیچ خبری توسط هوش مصنوعی انتخاب نشد.")
-        return
+        return 0
 
     sent_count = 0
     for item in selected_items[:3]:
@@ -342,29 +318,24 @@ def main():
             source_name = batch_articles[idx]["source"]
             post_text = format_post(item, source_name)
 
-            print(
-                f"📤 در حال ارسال خبر «{item.get('title')}» ({len(post_text)} کاراکتر) به @{CHANNEL}..."
-            )
+            print(f"📤 در حال ارسال خبر «{item.get('title')}» ({len(post_text)} کاراکتر) به @{CHANNEL}...")
             if send_to_eitaa(post_text):
                 sent_count += 1
-                time.sleep(5)  # وقفه ایمن بین ارسال پست‌ها
+                time.sleep(5)
             else:
                 print("⚠️ ارسال متوقف شد تا در نوبت بعدی مجدداً تلاش شود.")
                 break
 
-    # اگر ارسال به ایتا موفقیت‌آمیز بود، تمام اخبار بررسی‌شده این نوبت را در seen.json ثبت کن
-    # تا در نوبت ۴ ساعت بعد، اخبار ردشده‌ی این نوبت دوباره بررسی نشوند.
     if sent_count > 0:
         for art in batch_articles:
             seen_list.append(art["link"])
         save_seen(seen_list)
-        print(
-            f"💾 تعداد {sent_count} پست منتشر شد و {len(batch_articles)} خبر بررسی‌شده در seen.json بایگانی شد."
-        )
-    else:
-        print("❌ هیچ پستی ارسال نشد؛ فایل seen.json تغییر نکرد تا در نوبت بعد دوباره تلاش شود.")
-        sys.exit(1)
+        print(f"💾 تعداد {sent_count} پست منتشر شد و {len(batch_articles)} خبر بررسی‌شده در seen.json بایگانی شد.")
+        return 0
+
+    print("❌ هیچ پستی ارسال نشد؛ فایل seen.json تغییر نکرد تا در نوبت بعد دوباره تلاش شود.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
