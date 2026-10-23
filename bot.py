@@ -21,9 +21,7 @@ EITAA_TOKEN = os.environ.get("EITAA_TOKEN", "").strip()
 CHANNEL = os.environ.get("CHANNEL", "").strip()
 
 if not all([GEMINI_KEY, EITAA_TOKEN, CHANNEL]):
-    print(
-        "❌ خطای تنظیمات: یکی از متغیرهای GEMINI_KEY، EITAA_TOKEN یا CHANNEL در Secrets GitHub وارد نشده است."
-    )
+    print("❌ خطای تنظیمات: متغیرهای GEMINI_KEY، EITAA_TOKEN یا CHANNEL ست نشده‌اند.")
     raise SystemExit(1)
 
 CHANNEL = (
@@ -33,12 +31,12 @@ CHANNEL = (
     .strip()
 )
 
-# لیست منابع خبری کامل (تکنولوژی، هوش مصنوعی جهانی، بین‌الملل و عمومی)
+# لیست منابع خبری معتبر و فعال
 RSS_FEEDS = [
     {
-        "name": "تک‌کرانچ (مرجع جهانی AI)",
+        "name": "تک‌کرانچ (هوش مصنوعی)",
         "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
-        "category": "تحلیل و اخبار اختصاصی هوش مصنوعی",
+        "category": "تکنولوژی و هوش مصنوعی جهانی",
     },
     {
         "name": "زومیت",
@@ -48,47 +46,32 @@ RSS_FEEDS = [
     {
         "name": "دیجیاتو",
         "url": "https://digiato.com/feed",
-        "category": "تکنولوژی و هوش مصنوعی",
+        "category": "تکنولوژی و فناوری",
     },
     {
         "name": "الجزیره (بین‌الملل)",
         "url": "https://www.aljazeera.com/xml/rss/all.xml",
-        "category": "اخبار فوری و تحلیل سیاسی/جنگ",
-    },
-    {
-        "name": "رویترز (اخبار جهان)",
-        "url": "https://www.reutersagency.com/feed/?best-topics=world&post_type=best",
-        "category": "اخبار جهانی و فوری",
-    },
-    {
-        "name": "ایسنا (علمی و عمومی)",
-        "url": "https://www.isna.ir/rss/ns/26",
-        "category": "اطلاعات عمومی، علمی و فناوری",
+        "category": "اخبار جهانی و تحولات سیاسی/جنگ",
     },
     {
         "name": "خبرگزاری مهر (فناوری)",
         "url": "https://www.mehrnews.com/rss/tp/5",
         "category": "علم و فناوری",
     },
-    {
-        "name": "تسنیم (سیاسی)",
-        "url": "https://www.tasnimnews.com/fa/rss/feed/0/7/1/%D8%B3%DB%8C%D8%A7%D8%B3%DB%8C",
-        "category": "سیاسی",
-    },
 ]
 
 
 class AnalyzedNewsItem(BaseModel):
     index: int = Field(description="شماره ردیف خبر انتخاب شده از لیست ورودی")
-    title: str = Field(description="تیتر جذاب، دقیق و کاملا وفادار به متن خبر (به زبان فارسی)")
+    title: str = Field(description="تیتر جذاب، دقیق و روان به زبان فارسی")
     summary: str = Field(
-        description="خلاصه دقیق و روان در ۲ تا ۳ جمله کوتاه به زبان فارسی روان"
+        description="خلاصه دقیق در ۲ تا ۳ جمله کوتاه به زبان فارسی روان"
     )
     why_important: str = Field(
-        description="تحلیل کوتاه در ۱ یا ۲ جمله که چرا این خبر مهم است (به زبان فارسی)"
+        description="تحلیل کوتاه در ۱ یا ۲ جمله که چرا این خبر مهم است"
     )
     hashtags: list[str] = Field(
-        description="دقیقا ۳ هشتگ مرتبط به زبان فارسی (کلمات با خط زیر جدا شوند، مثال: هوش_مصنوعی)"
+        description="دقیقا ۳ هشتگ مرتبط به زبان فارسی (مثال: هوش_مصنوعی)"
     )
 
 
@@ -134,7 +117,7 @@ def load_seen():
             data = json.load(f)
             return data if isinstance(data, list) else []
     except Exception as e:
-        print(f"⚠️ هشدار در خواندن {SEEN_FILE.name}: {e} - شروع با لیست خالی.")
+        print(f"⚠️ هشدار در خواندن فایل دیده شده‌ها: {e}")
         return []
 
 
@@ -201,28 +184,23 @@ def select_and_analyze(articles):
         news_text += (
             f"[{i}] منبع: {art['source']} | دسته: {art['category']}\n"
             f"تیتر: {art['title']}\n"
-            f"متن کوتاه: {art['summary']}\n"
+            f"متن: {art['summary']}\n"
             f"---\n"
         )
 
     prompt = f"""نقش: سردبیر ارشد «عدل نیوز». وظیفه: انتخاب ۱ تا ۳ خبر برتر از لیست زیر، ترجمه روان (برای منابع انگلیسی) و خلاصه استاندارد به فارسی.
 
-    توازن در انتخاب:
-    - فناوری و هوش مصنوعی (تک‌کرانچ، زومیت، دیجیاتو)
-    - بین‌الملل و تحولات (الجزیره، رویترز)
-    - عمومی، علمی و روز (ایسنا، مهر، تسنیم)
-
     قوانین سخت‌گیرانه:
     1. استناد صددرصدی به متن؛ بدون حدس، آمار یا اطلاعات خارج از متن.
-    2. ممنوعیت استفاده از ستاره (**) یا تگ‌های HTML در متن‌ها.
-    3. لحن کاملاً ژورنالیستی، کوتاه و متناسب با محدودیت ۷۵۰ کاراکتر پست.
-    4. استفاده دقیق از ایندکس عددی خبر `[index]` در خروجی.
+    2. ممنوعیت کامل استفاده از ستاره (**) یا تگ‌های HTML در محتوای درون فیلدها.
+    3. لحن کاملاً ژورنالیستی و محتوای کوتاه.
+    4. ارجاع دقیق به ایندکس عددی خبر `[index]`.
 
     لیست اخبار ورودی:
     {news_text}
     """
 
-    for model_name in ["gemini-3.8-flash", "gemini-1.5-flash"]:
+    for model_name in ["gemini-2.5-flash", "gemini-2.0-flash"]:
         try:
             response = client.models.generate_content(
                 model=model_name,
@@ -256,14 +234,10 @@ def format_post(item, source_name):
 
     hashtags_str = " ".join(clean_tags) if clean_tags else "#فناوری #بین_الملل #اخبار_روز"
     
-    # استفاده از علامت ** برای بولد شدن صحیح و تمیز در ایتا
+    # فرمت کاملاً سازگار با Markdown ایتا
     header = f"**📌 {title}**\n\n"
     body = f"**📝 خلاصه:**\n{summary}\n\n**💡 چرا مهم است؟**\n{why_imp}"
     footer = f"\n\n🏷 {hashtags_str}\n📡 منبع: {source_name}\n🆔 @{CHANNEL}"
-
-    max_body_len = 780 - len(header) - len(footer)
-    if len(body) > max_body_len:
-        body = body[: max_body_len - 3].rsplit(" ", 1)[0] + "..."
 
     return f"{header}{body}{footer}"
 
@@ -293,8 +267,8 @@ def main():
         print("📭 هیچ خبر جدیدی یافت نشد.")
         return 0
 
-    batch_articles = all_new_articles[:28]
-    print(f"🔍 تعداد {len(batch_articles)} خبر آماده تحلیل است.")
+    batch_articles = all_new_articles[:25]
+    print(f"🔍 تعداد {len(batch_articles)} خبر جدید آماده تحلیل است.")
 
     selected_items = select_and_analyze(batch_articles)
     if not selected_items:
@@ -318,7 +292,7 @@ def main():
         for art in batch_articles:
             seen_list.append(art["link"])
         save_seen(seen_list)
-        print(f"💾 تعداد {sent_count} پست منتشر شد.")
+        print(f"💾 تعداد {sent_count} پست منتشر و ذخیره شد.")
         return 0
 
     return 0
