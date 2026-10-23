@@ -35,34 +35,57 @@ CHANNEL = (
     .strip()
 )
 
-# لیست منابع فید RSS استاندارد و پرسرعت
+# لیست منابع فید RSS؛ هر فید یک "group" دارد تا انتخاب خبرها متعادل باشد
+GNEWS = "https://news.google.com/rss/search?q=when:{w}+site:reuters.com/{sec}&ceid=US:en&hl=en-US&gl=US"
+
 RSS_FEEDS = [
-    {
-        "name": "تک‌کرانچ (هوش مصنوعی)",
-        "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
-        "category": "تکنولوژی و هوش مصنوعی",
-    },
-    {
-        "name": "دیجیاتو",
-        "url": "https://digiato.com/feed",
-        "category": "تکنولوژی و فناوری",
-    },
-    {
-        "name": "ورزش سه",
-        "url": "https://www.varzesh3.com/rss",
-        "category": "ورزش",
-    },
-    {
-        "name": "الجزیره (بین‌الملل و جنگ)",
-        "url": "https://www.aljazeera.com/xml/rss/all.xml",
-        "category": "بین‌الملل و سیاست",
-    },
-    {
-        "name": "خبرگزاری فارس",
-        "url": "https://www.farsnews.ir/rss",
-        "category": "سیاست و اخبار عمومی",
-    },
+    # --- تکنولوژی و هوش مصنوعی ---
+    {"name": "تک‌کرانچ (هوش مصنوعی)", "group": "tech", "category": "تکنولوژی و هوش مصنوعی",
+     "url": "https://techcrunch.com/category/artificial-intelligence/feed/"},
+    {"name": "ورج (هوش مصنوعی)", "group": "tech", "category": "تکنولوژی و هوش مصنوعی",
+     "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"},
+    {"name": "آرس تکنیکا (هوش مصنوعی)", "group": "tech", "category": "تکنولوژی و هوش مصنوعی",
+     "url": "https://arstechnica.com/ai/feed/"},
+    {"name": "مجله فناوری MIT", "group": "tech", "category": "تکنولوژی و هوش مصنوعی",
+     "url": "https://www.technologyreview.com/topic/artificial-intelligence/feed"},
+    {"name": "دیجیاتو", "group": "tech", "category": "تکنولوژی و فناوری",
+     "url": "https://digiato.com/feed"},
+    {"name": "رویترز (فناوری)", "group": "tech", "category": "تکنولوژی و فناوری",
+     "url": GNEWS.format(w="7d", sec="technology")},
+    # --- علمی ---
+    {"name": "آرس تکنیکا (علم)", "group": "science", "category": "علمی",
+     "url": "https://feeds.arstechnica.com/arstechnica/science"},
+    {"name": "گاردین (علم)", "group": "science", "category": "علمی",
+     "url": "https://www.theguardian.com/science/rss"},
+    {"name": "وایرد (علم)", "group": "science", "category": "علمی",
+     "url": "https://www.wired.com/feed/category/science/latest/rss"},
+    # --- ورزشی ---
+    {"name": "ورزش سه", "group": "sport", "category": "ورزش",
+     "url": "https://www.varzesh3.com/rss/all"},
+    {"name": "اسکای اسپورتس", "group": "sport", "category": "ورزش",
+     "url": "https://www.skysports.com/rss/12040"},
+    {"name": "گاردین (ورزش)", "group": "sport", "category": "ورزش",
+     "url": "https://www.theguardian.com/uk/sport/rss"},
+    {"name": "رویترز (ورزش)", "group": "sport", "category": "ورزش",
+     "url": GNEWS.format(w="7d", sec="sports")},
+    # --- سیاسی و جنگ ---
+    {"name": "الجزیره (بین‌الملل و جنگ)", "group": "politics", "category": "بین‌الملل و سیاست",
+     "url": "https://www.aljazeera.com/xml/rss/all.xml"},
+    {"name": "گاردین (جهان)", "group": "politics", "category": "بین‌الملل و سیاست",
+     "url": "https://www.theguardian.com/world/rss"},
+    {"name": "رویترز (جهان)", "group": "politics", "category": "بین‌الملل و سیاست",
+     "url": GNEWS.format(w="24h", sec="world")},
+    {"name": "خبرگزاری فارس", "group": "politics", "category": "سیاست و اخبار عمومی",
+     "url": "https://www.farsnews.ir/rss"},
+    {"name": "خبرگزاری مهر", "group": "politics", "category": "سیاست و اخبار عمومی",
+     "url": "https://www.mehrnews.com/rss"},
+    {"name": "پرس‌تی‌وی", "group": "politics", "category": "بین‌الملل و سیاست",
+     "url": "https://www.presstv.ir/rss.xml"},
 ]
+
+# سهم هر دسته از ورودی مدل (مجموعاً ۲۵ خبر) تا هیچ دسته‌ای از قلم نیفتد
+GROUP_QUOTAS = {"tech": 7, "science": 5, "sport": 6, "politics": 7}
+POSTS_COUNT = 4
 
 
 class AnalyzedNewsItem(BaseModel):
@@ -74,7 +97,7 @@ class AnalyzedNewsItem(BaseModel):
 
 
 class AnalyzedNewsBatch(BaseModel):
-    selected_news: list[AnalyzedNewsItem] = Field(description="لیست ۳ خبر برتر با تفکیک موضوعی")
+    selected_news: list[AnalyzedNewsItem] = Field(description="لیست ۴ خبر برتر با تفکیک موضوعی")
 
 
 def normalize_link(url):
@@ -107,8 +130,8 @@ def clean_html(raw_html):
 def fetch_single_feed(feed_info, seen_set):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     feed_articles = []
+    name = feed_info["name"]
     try:
-        print(f"⏳ دریافت هم‌زمان: {feed_info['name']}...")
         try:
             resp = requests.get(feed_info["url"], headers=headers, timeout=6)
         except requests.exceptions.SSLError:
@@ -116,10 +139,12 @@ def fetch_single_feed(feed_info, seen_set):
             resp = requests.get(feed_info["url"], headers=headers, timeout=6, verify=False)
 
         if resp.status_code != 200:
+            print(f"❌ {name}: HTTP {resp.status_code}")
             return []
-        
+
         feed = feedparser.parse(resp.content)
-        for entry in feed.entries[:4]:
+        entries = feed.entries[:4]
+        for entry in entries:
             raw_link = entry.get("link", "").strip()
             norm_link = normalize_link(raw_link)
             title = clean_html(entry.get("title", ""))
@@ -128,15 +153,20 @@ def fetch_single_feed(feed_info, seen_set):
             if norm_link and title and norm_link not in seen_set:
                 feed_articles.append(
                     {
-                        "source": feed_info["name"],
+                        "source": name,
                         "category": feed_info["category"],
+                        "group": feed_info["group"],
                         "title": title,
                         "summary": summary[:350] if summary else title,
                         "link": norm_link,
                     }
                 )
+        if not entries:
+            print(f"⚠️ {name}: فید خالی یا نامعتبر")
+        else:
+            print(f"✅ {name}: {len(feed_articles)} خبر جدید از {len(entries)}")
     except Exception as e:
-        print(f"⚡ عبور سریع از {feed_info['name']} به دلیل خطا یا کندی: {e}")
+        print(f"⚡ عبور سریع از {name} به دلیل خطا یا کندی: {e}")
     return feed_articles
 
 
@@ -158,8 +188,28 @@ def fetch_new_articles(seen_list):
     return articles
 
 
-# کدهایی که ارزش تلاش مجدد دارند (overload / rate limit / خطای موقت سرور)
-RETRYABLE = {408, 429, 500, 502, 503, 504}
+def balance_articles(articles):
+    """از هر دسته (group) به‌اندازه سهمش خبر برمی‌دارد و بین منابع آن دسته نوبتی پخش می‌کند."""
+    by_group = {}
+    for art in articles:
+        by_group.setdefault(art["group"], {}).setdefault(art["source"], []).append(art)
+
+    result = []
+    for group, quota in GROUP_QUOTAS.items():
+        queues = list(by_group.get(group, {}).values())
+        picked = []
+        while len(picked) < quota and any(queues):
+            for q in queues:
+                if q and len(picked) < quota:
+                    picked.append(q.pop(0))
+        print(f"📊 دسته {group}: {len(picked)} خبر برای تحلیل")
+        result.extend(picked)
+    return result
+
+
+# کدهایی که ارزش تلاش مجدد روی همان مدل دارند (خطای موقت / overload سرور).
+# 429 (پر شدن سهمیه) عمداً نیست: هر مدل سهمیه جدا دارد، پس سریع می‌رویم سراغ مدل بعدی.
+RETRYABLE = {408, 500, 502, 503, 504}
 
 # به ترتیب اولویت؛ مدل‌هایی که در API وجود ندارند خودکار حذف می‌شوند
 MODELS = [
@@ -206,6 +256,9 @@ def _try_model(client, model, prompt, attempts=3, base=2, cap=30):
                 return selected
             print(f"⚠️ {model}: خروجی خالی (تلاش {i}/{attempts})")
         except errors.APIError as e:
+            if e.code == 429:
+                print(f"⛔ {model}: سهمیه پر شده (429) → مدل بعدی")
+                return None
             if e.code not in RETRYABLE:
                 # 404 / 400 / 403 ...: تکرار فایده ندارد، برو مدل بعدی
                 print(f"⛔ {model}: خطای {e.code} (غیرقابل تلاش مجدد) → مدل بعدی")
@@ -241,10 +294,11 @@ def select_and_analyze(articles):
             f"تیتر: {art['title']}\nمتن: {art['summary']}\n---\n"
         )
 
-    prompt = f"""نقش: سردبیر ارشد «عدل نیوز». شما باید دقیقاً ۳ خبر برتر را از بین اخبار زیر انتخاب کنید، به طوری که تفکیک موضوعی زیر به دقت رعایت شود:
+    prompt = f"""نقش: سردبیر ارشد «عدل نیوز». شما باید دقیقاً ۴ خبر برتر را از بین اخبار زیر انتخاب کنید، به طوری که تفکیک موضوعی زیر به دقت رعایت شود:
     1. یک خبر حتماً درباره «تکنولوژی و هوش مصنوعی (AI)» باشد.
-    2. یک خبر حتماً درباره «ورزش» باشد.
-    3. یک خبر حتماً درباره «جنگ، مسائل بین‌الملل یا سیاست» باشد.
+    2. یک خبر حتماً «علمی» باشد.
+    3. یک خبر حتماً درباره «ورزش» باشد.
+    4. یک خبر حتماً درباره «جنگ، مسائل بین‌الملل یا سیاست» باشد.
 
     قوانین سخت‌گیرانه:
     1. بدون حدس و اطلاعات خارج از متن.
@@ -255,11 +309,16 @@ def select_and_analyze(articles):
     {news_text}
     """
 
-    for model in _available_models(client):
-        print(f"🧠 پردازش با {model}...")
-        result = _try_model(client, model, prompt)
-        if result:
-            return result
+    models = _available_models(client)
+    for round_no in (1, 2):
+        for model in models:
+            print(f"🧠 پردازش با {model}...")
+            result = _try_model(client, model, prompt)
+            if result:
+                return result
+        if round_no == 1:
+            print("🔁 همه مدل‌ها ناموفق بودند؛ ۲۰ ثانیه صبر و دور دوم...")
+            time.sleep(20)
 
     print("❌ هیچ‌کدام از مدل‌ها نتیجه نداد")
     return []
@@ -305,7 +364,7 @@ def main():
         print("📭 خبر جدیدی یافت نشد.")
         return 0
 
-    batch_articles = all_new_articles[:25]
+    batch_articles = balance_articles(all_new_articles)
     selected_items = select_and_analyze(batch_articles)
 
     if not selected_items:
@@ -316,7 +375,7 @@ def main():
     sent_count = 0
     successfully_sent_links = []
 
-    for item in selected_items[:3]:
+    for item in selected_items[:POSTS_COUNT]:
         idx = item.get("index")
         if idx is not None and 0 <= idx < len(batch_articles):
             art = batch_articles[idx]
