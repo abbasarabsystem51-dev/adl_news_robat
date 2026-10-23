@@ -33,7 +33,7 @@ CHANNEL = (
     .strip()
 )
 
-# لیست منابع خبری کامل (فناوری، هوش مصنوعی جهانی، بین‌الملل و عمومی)
+# لیست منابع خبری کامل (تکنولوژی، هوش مصنوعی جهانی، بین‌الملل و عمومی)
 RSS_FEEDS = [
     {
         "name": "تک‌کرانچ (مرجع جهانی AI)",
@@ -101,10 +101,10 @@ class AnalyzedNewsBatch(BaseModel):
 def create_http_session():
     session = requests.Session()
     retry_strategy = Retry(
-        total=3,
-        backoff_factor=2,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "POST"],
+        total=1,
+        backoff_factor=1,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["GET"],
     )
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session.mount("http://", adapter)
@@ -113,7 +113,6 @@ def create_http_session():
         {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             "Accept": "application/xhtml+xml,application/xml,text/xml,application/json,*/*;q=0.9",
-            "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
         }
     )
     return session
@@ -158,7 +157,8 @@ def fetch_new_articles(seen_list):
 
     for feed_info in RSS_FEEDS:
         try:
-            resp = HTTP_SESSION.get(feed_info["url"], timeout=20)
+            print(f"⏳ در حال دریافت فید: {feed_info['name']}...")
+            resp = HTTP_SESSION.get(feed_info["url"], timeout=8)
             resp.raise_for_status()
             feed = feedparser.parse(resp.content)
 
@@ -185,7 +185,7 @@ def fetch_new_articles(seen_list):
                         }
                     )
         except Exception as e:
-            print(f"⚠️ خطا در دریافت فید «{feed_info['name']}»: {e}")
+            print(f"⚠️ عبور سریع از فید «{feed_info['name']}» به دلیل خطا/تایم‌اوت: {e}")
 
     return articles
 
@@ -205,7 +205,6 @@ def select_and_analyze(articles):
             f"---\n"
         )
 
-    # پرامپت فوق‌العاده بهینه، متراکم و صرفه‌جویانه در مصرف توکن
     prompt = f"""نقش: سردبیر ارشد «عدل نیوز». وظیفه: انتخاب ۱ تا ۳ خبر برتر از لیست زیر، ترجمه روان (برای منابع انگلیسی) و خلاصه استاندارد به فارسی.
 
     توازن در انتخاب:
@@ -223,26 +222,23 @@ def select_and_analyze(articles):
     {news_text}
     """
 
-    models_to_try = ["gemini-3.8-flash", "gemini-1.5-flash"]
-    for model_name in models_to_try:
-        for attempt in range(1, 3):
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=AnalyzedNewsBatch,
-                        temperature=0.2,
-                    ),
-                )
-                parsed_data = json.loads(response.text)
-                return parsed_data.get("selected_news", [])
-            except Exception as e:
-                print(f"⚠️ تلاش {attempt} با مدل {model_name} ناموفق بود: {e}")
-                time.sleep(4)
+    for model_name in ["gemini-3.8-flash", "gemini-1.5-flash"]:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=AnalyzedNewsBatch,
+                    temperature=0.2,
+                ),
+            )
+            parsed_data = json.loads(response.text)
+            return parsed_data.get("selected_news", [])
+        except Exception as e:
+            print(f"⚠️ خطا با مدل {model_name}: {e}")
 
-    print("❌ خطای بحرانی: ارتباط با سرورهای Gemini پس از چندین تلاش برقرار نشد.")
+    print("❌ خطای ارتباط با جمینای.")
     return []
 
 
@@ -260,9 +256,9 @@ def format_post(item, source_name):
 
     hashtags_str = " ".join(clean_tags) if clean_tags else "#فناوری #بین_الملل #اخبار_روز"
     
-    # استفاده از تگ‌های HTML برای بولد کردن در ایتا
-    header = f"<b>📌 {title}</b>\n\n"
-    body = f"<b>📝 خلاصه:</b>\n{summary}\n\n<b>💡 چرا مهم است؟</b>\n{why_imp}"
+    # استفاده از علامت ** برای بولد شدن صحیح و تمیز در ایتا
+    header = f"**📌 {title}**\n\n"
+    body = f"**📝 خلاصه:**\n{summary}\n\n**💡 چرا مهم است؟**\n{why_imp}"
     footer = f"\n\n🏷 {hashtags_str}\n📡 منبع: {source_name}\n🆔 @{CHANNEL}"
 
     max_body_len = 780 - len(header) - len(footer)
@@ -274,34 +270,17 @@ def format_post(item, source_name):
 
 def send_to_eitaa(text):
     url = f"https://eitaayar.ir/api/{EITAA_TOKEN}/sendMessage"
-    payload = {"chat_id": CHANNEL, "text": text, "parse_mode": "HTML"}
+    payload = {"chat_id": CHANNEL, "text": text}
 
     try:
-        response = HTTP_SESSION.post(url, data=payload, timeout=20)
-
-        if response.status_code != 200:
-            print(f"❌ خطا از سمت سرور ایتایار (کد وضعیت HTTP: {response.status_code})")
-            if response.status_code == 403:
-                print("💡 علت خطا: فایروال ایتایار دسترسی سرور خارج از کشور (GitHub) را مسدود کرده است.")
-            print(f"پاسخ خام سرور: {response.text[:300]}")
-            return False
-
-        data = response.json()
-        if data.get("ok") is True:
+        response = HTTP_SESSION.post(url, data=payload, timeout=15)
+        if response.status_code == 200 and response.json().get("ok") is True:
             print("✅ پست با موفقیت در کانال ایتا منتشر شد!")
             return True
-
-        print(f"❌ API ایتایار پیام را رد کرد: {data}")
-        return False
-
-    except requests.exceptions.Timeout:
-        print("❌ خطای Timeout: اتصال به سرور eitaayar.ir بیش از حد طول کشید.")
-        return False
-    except requests.exceptions.ConnectionError as e:
-        print(f"❌ خطای شبکه در اتصال به ایتایار: {e}")
+        print(f"❌ خطا از ایتا: {response.text[:300]}")
         return False
     except Exception as e:
-        print(f"❌ خطای پیش‌بینی‌نشده در ارسال به ایتا: {e}")
+        print(f"❌ خطای ارسال به ایتا: {e}")
         return False
 
 
@@ -311,16 +290,15 @@ def main():
     all_new_articles = fetch_new_articles(seen_list)
 
     if not all_new_articles:
-        print("📭 هیچ خبر جدیدی از آخرین اجرا تا الان منتشر نشده است. پایان کار.")
+        print("📭 هیچ خبر جدیدی یافت نشد.")
         return 0
 
     batch_articles = all_new_articles[:28]
-    print(f"🔍 تعداد {len(batch_articles)} خبر جدید دریافت شد. در حال تحلیل توسط Gemini...")
+    print(f"🔍 تعداد {len(batch_articles)} خبر آماده تحلیل است.")
 
     selected_items = select_and_analyze(batch_articles)
-
     if not selected_items:
-        print("⚠️ هیچ خبری توسط هوش مصنوعی انتخاب نشد.")
+        print("⚠️ خبری توسط هوش مصنوعی انتخاب نشد.")
         return 0
 
     sent_count = 0
@@ -330,22 +308,19 @@ def main():
             source_name = batch_articles[idx]["source"]
             post_text = format_post(item, source_name)
 
-            print(f"📤 در حال ارسال خبر «{item.get('title')}» ({len(post_text)} کاراکتر) به @{CHANNEL}...")
             if send_to_eitaa(post_text):
                 sent_count += 1
-                time.sleep(5)
+                time.sleep(3)
             else:
-                print("⚠️ ارسال متوقف شد تا در نوبت بعدی مجدداً تلاش شود.")
                 break
 
     if sent_count > 0:
         for art in batch_articles:
             seen_list.append(art["link"])
         save_seen(seen_list)
-        print(f"💾 تعداد {sent_count} پست منتشر شد و {len(batch_articles)} خبر بررسی‌شده در seen.json بایگانی شد.")
+        print(f"💾 تعداد {sent_count} پست منتشر شد.")
         return 0
 
-    print("❌ هیچ پستی ارسال نشد؛ فایل seen.json تغییر نکرد تا در نوبت بعد دوباره تلاش شود.")
     return 0
 
 
