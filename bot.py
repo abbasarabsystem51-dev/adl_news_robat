@@ -85,6 +85,10 @@ RSS_FEEDS = [
 GROUP_QUOTAS = {"tech": 7, "science": 5, "sport": 6, "politics": 7}
 POSTS_COUNT = 4
 
+# دقیقاً این تعداد از پست‌ها عکس‌دار می‌شوند. دسته‌هایی که عکس دارند به ترتیب اولویت انتخاب می‌شوند.
+IMAGE_GROUPS_COUNT = 2
+IMAGE_PRIORITY = ["tech", "sport", "politics", "science"]
+
 
 class AnalyzedNewsItem(BaseModel):
     index: int = Field(description="شماره ردیف خبر انتخاب شده")
@@ -157,6 +161,7 @@ def fetch_single_feed(feed_info, seen_set):
                         "title": title,
                         "summary": summary[:350] if summary else title,
                         "link": norm_link,
+                        "image": extract_image_url(entry),
                     }
                 )
         if not entries:
@@ -187,20 +192,33 @@ def fetch_new_articles(seen_list):
 
 
 def balance_articles(articles):
-    """از هر دسته (group) به‌اندازه سهمش خبر برمی‌دارد و بین منابع آن دسته نوبتی پخش می‌کند."""
+    """از هر دسته به‌اندازه سهمش خبر برمی‌دارد. در دقیقاً IMAGE_GROUPS_COUNT دسته فقط خبرهای
+    دارای عکس به مدل داده می‌شوند و اجازه ارسال عکس (allow_image) فقط برای همان‌هاست."""
     by_group = {}
     for art in articles:
         by_group.setdefault(art["group"], {}).setdefault(art["source"], []).append(art)
 
+    groups_with_img = {
+        g for g, srcs in by_group.items()
+        if any(a.get("image") for q in srcs.values() for a in q)
+    }
+    image_groups = [g for g in IMAGE_PRIORITY if g in groups_with_img][:IMAGE_GROUPS_COUNT]
+    print(f"🖼 دسته‌های دارای عکس در این ران: {image_groups or 'هیچ‌کدام'}")
+
     result = []
     for group, quota in GROUP_QUOTAS.items():
+        is_img = group in image_groups
         queues = list(by_group.get(group, {}).values())
+        if is_img:
+            queues = [[a for a in q if a.get("image")] for q in queues]
         picked = []
         while len(picked) < quota and any(queues):
             for q in queues:
                 if q and len(picked) < quota:
                     picked.append(q.pop(0))
-        print(f"📊 دسته {group}: {len(picked)} خبر برای تحلیل")
+        for art in picked:
+            art["allow_image"] = is_img
+        print(f"📊 دسته {group}: {len(picked)} خبر برای تحلیل" + (" (فقط عکس‌دار)" if is_img else ""))
         result.extend(picked)
     return result
 
@@ -346,6 +364,67 @@ def select_and_analyze(articles):
     return []
 
 
+EITAA_PHOTO_METHOD = "sendFile"  # نام متد ارسال فایل/عکس در API ایتایار؛ اگر متفاوت بود اینجا عوض کن
+MAX_IMAGE_BYTES = 5_000_000
+CAPTION_LIMIT = 1000
+
+
+def extract_image_url(entry):
+    """اولین عکس معتبر از فید (media:content، media:thumbnail یا enclosure)."""
+    for key in ("media_content", "media_thumbnail"):
+        for m in entry.get(key, []) or []:
+            url = str(m.get("url", ""))
+            if url.startswith("http"):
+                return url
+    for enc in entry.get("enclosures", []) or []:
+        if str(enc.get("type", "")).startswith("image/") and str(enc.get("href", "")).startswith("http"):
+            return enc["href"]
+    return None
+
+
+def download_image(url):
+    """دانلود عکس؛ اگر چیزی نبود یا خیلی بزرگ بود None برمی‌گرداند."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=8)
+        mime = resp.headers.get("Content-Type", "").split(";")[0].strip()
+        if resp.status_code != 200 or not mime.startswith("image/"):
+            return None
+        if not resp.content or len(resp.content) > MAX_IMAGE_BYTES:
+            return None
+        return resp.content, mime
+    except Exception as e:
+        print(f"⚠️ دانلود عکس ناموفق ({e})")
+        return None
+
+
+def send_photo_to_eitaa(image_bytes, mime, caption):
+    url = f"https://eitaayar.ir/api/{EITAA_TOKEN}/{EITAA_PHOTO_METHOD}"
+    files = {"file": ("news.jpg", image_bytes, mime)}
+    data = {"chat_id": CHANNEL, "caption": caption}
+    try:
+        resp = requests.post(url, data=data, files=files, timeout=20)
+        if resp.status_code == 200 and resp.json().get("ok") is True:
+            return True
+        print(f"⚠️ ارسال عکس ناموفق: HTTP {resp.status_code}")
+    except Exception as e:
+        print(f"⚠️ خطا در ارسال عکس: {e}")
+    return False
+
+
+def publish_post(post_text, image_url):
+    """اول عکس با کپشن؛ اگر نشد یا کپشن جا نشد، متن. برمی‌گرداند آیا پست منتشر شد."""
+    if image_url:
+        img = download_image(image_url)
+        if img:
+            if len(post_text) <= CAPTION_LIMIT:
+                if send_photo_to_eitaa(img[0], img[1], post_text):
+                    return True
+            elif send_photo_to_eitaa(img[0], img[1], ""):
+                return send_to_eitaa(post_text)
+    return send_to_eitaa(post_text)
+
+
 def format_post(item, source_name):
     title = item.get("title", "").replace("*", "").strip()
     summary = item.get("summary", "").replace("*", "").strip()
@@ -402,7 +481,8 @@ def main():
         if idx is not None and 0 <= idx < len(batch_articles):
             art = batch_articles[idx]
             post_text = format_post(item, art["source"])
-            if send_to_eitaa(post_text):
+            print(f"🖼 خبر {idx} ({art['source']}): {'با عکس' if art.get('allow_image') and art.get('image') else 'بدون عکس'}")
+            if publish_post(post_text, art.get("image") if art.get("allow_image") else None):
                 sent_count += 1
                 successfully_sent_links.append(art["link"])
                 print(f"✅ خبر شماره {idx} با موفقیت به ایتا ارسال شد.")
