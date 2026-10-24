@@ -85,8 +85,9 @@ RSS_FEEDS = [
 GROUP_QUOTAS = {"tech": 7, "science": 5, "sport": 6, "politics": 7}
 POSTS_COUNT = 4
 
-# دقیقاً این تعداد از پست‌ها عکس‌دار می‌شوند. دسته‌هایی که عکس دارند به ترتیب اولویت انتخاب می‌شوند.
-IMAGE_GROUPS_COUNT = 2
+# حداقل این تعداد از پست‌ها حتماً عکس‌دار می‌شوند (فقط خبرهای عکس‌دار به مدل داده می‌شود).
+# دسته‌های باقی‌مانده هم اگر خبرشان عکس داشت، با عکس ارسال می‌شود.
+IMAGE_GROUPS_COUNT = 3
 IMAGE_PRIORITY = ["tech", "sport", "politics", "science"]
 
 
@@ -192,8 +193,8 @@ def fetch_new_articles(seen_list):
 
 
 def balance_articles(articles):
-    """از هر دسته به‌اندازه سهمش خبر برمی‌دارد. در دقیقاً IMAGE_GROUPS_COUNT دسته فقط خبرهای
-    دارای عکس به مدل داده می‌شوند و اجازه ارسال عکس (allow_image) فقط برای همان‌هاست."""
+    """از هر دسته به‌اندازه سهمش خبر برمی‌دارد. در IMAGE_GROUPS_COUNT دسته فقط خبرهای دارای عکس
+    به مدل داده می‌شوند (پس آن پست‌ها حتماً عکس دارند). بقیه دسته‌ها هم اگر عکس داشتند، با عکس می‌روند."""
     by_group = {}
     for art in articles:
         by_group.setdefault(art["group"], {}).setdefault(art["source"], []).append(art)
@@ -217,7 +218,7 @@ def balance_articles(articles):
                 if q and len(picked) < quota:
                     picked.append(q.pop(0))
         for art in picked:
-            art["allow_image"] = is_img
+            art["allow_image"] = True
         print(f"📊 دسته {group}: {len(picked)} خبر برای تحلیل" + (" (فقط عکس‌دار)" if is_img else ""))
         result.extend(picked)
     return result
