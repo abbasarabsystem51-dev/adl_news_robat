@@ -1,3 +1,10 @@
+"""ربات خبری عدل نیوز: جمع‌آوری خبر از RSS، انتخاب و بازنویسی با Gemini، ارسال به ایتا.
+
+ترتیب کار در هر ران:
+    فیدها → حذف خبر تکراری → انتخاب متعادل از هر دسته → گرفتن متن کامل خبر
+    → یک درخواست به Gemini (با fallback بین مدل‌ها) → ارسال پست‌ها (با عکس یا متن) → ذخیره سابقه
+"""
+
 import json
 import os
 import random
@@ -13,12 +20,24 @@ from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, Field
 
+try:
+    import trafilatura  # استخراج متن اصلی خبر؛ اگر نصب نبود، ربات فقط با خلاصه فید کار می‌کند
+except ImportError:
+    trafilatura = None
+
 # غیرفعال کردن هشدارهای SSL برای جلوگیری از خطای گواهی در سایت‌های داخلی
 import urllib3
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+# ══════════════════════════════════════════════════════════════
+# ۱) تنظیمات و متغیرهای محیطی
+# ══════════════════════════════════════════════════════════════
 
 BASE_DIR = Path(__file__).resolve().parent
 SEEN_FILE = BASE_DIR / "seen.json"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 GEMINI_KEY = os.environ.get("GEMINI_KEY", "").strip()
 EITAA_TOKEN = os.environ.get("EITAA_TOKEN", "").strip()
@@ -35,7 +54,44 @@ CHANNEL = (
     .strip()
 )
 
-# لیست منابع فید RSS؛ هر فید یک "group" دارد تا انتخاب خبرها متعادل باشد
+# ── محتوا ──
+POSTS_COUNT = 4            # تعداد پست در هر ران
+SEEN_LIMIT = 500           # تعداد لینک‌هایی که در سابقه نگه داشته می‌شود
+ENTRIES_PER_FEED = 4       # تعداد خبر اخیر از هر فید
+SUMMARY_CHARS = 350        # طول خلاصه فید
+FULLTEXT_CHARS = 1200      # حداکثر طول متن اصلی که به مدل داده می‌شود
+DEDUPE_THRESHOLD = 0.5     # شباهت تیتر (۰ تا ۱) برای تشخیص خبر تکراری بین منابع
+
+# سهم هر دسته از ورودی مدل (مجموعاً ۲۵ خبر) تا هیچ دسته‌ای از قلم نیفتد
+GROUP_QUOTAS = {"tech": 7, "science": 5, "sport": 6, "politics": 7}
+
+# ── عکس ──
+# در این تعداد دسته فقط خبرهای عکس‌دار به مدل داده می‌شود (پس آن پست‌ها حتماً عکس دارند).
+# دسته‌های باقی‌مانده هم اگر خبرشان عکس داشت، با عکس ارسال می‌شود.
+IMAGE_GROUPS_COUNT = 3
+IMAGE_PRIORITY = ["tech", "sport", "politics", "science"]
+EITAA_PHOTO_METHOD = "sendFile"  # نام متد ارسال عکس در API ایتایار؛ اگر متفاوت بود اینجا عوض کن
+MAX_IMAGE_BYTES = 5_000_000
+CAPTION_LIMIT = 1000
+
+# ── Gemini ──
+# خطاهایی که ارزش تلاش مجدد روی همان مدل دارند (خطای موقت و سریع‌برگشت مثل 503).
+RETRYABLE = {408, 500, 502, 503}
+# این کدها فوراً می‌روند سراغ مدل بعدی (تکرار روی همان مدل فایده ندارد و وقت می‌سوزاند):
+#   429 = پر شدن سهمیه (هر مدل سهمیه جدا دارد)
+#   504 = تایم‌اوت سمت گوگل؛ دوباره همان درخواست سنگین هم احتمالاً تایم‌اوت می‌خورد
+SKIP_MODEL_CODES = {429, 504}
+
+# به ترتیب اولویت؛ مدل‌هایی که در API وجود ندارند خودکار حذف می‌شوند
+MODELS = [
+    "gemini-3.6-flash",   # در چند ران پیاپی از اولین تلاش جواب داده (سریع و پایدار)
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+]
+
+# ── منابع خبر؛ هر فید یک group دارد تا انتخاب متعادل باشد ──
 GNEWS = "https://news.google.com/rss/search?q=when:{w}+site:reuters.com/{sec}&ceid=US:en&hl=en-US&gl=US"
 
 RSS_FEEDS = [
@@ -81,27 +137,45 @@ RSS_FEEDS = [
      "url": "https://www.presstv.ir/rss.xml"},
 ]
 
-# سهم هر دسته از ورودی مدل (مجموعاً ۲۵ خبر) تا هیچ دسته‌ای از قلم نیفتد
-GROUP_QUOTAS = {"tech": 7, "science": 5, "sport": 6, "politics": 7}
-POSTS_COUNT = 4
+PROMPT_TEMPLATE = """نقش: سردبیر ارشد «عدل نیوز». شما باید دقیقاً ۴ خبر برتر را از بین اخبار زیر انتخاب کنید، به طوری که تفکیک موضوعی زیر به دقت رعایت شود:
+1. یک خبر حتماً درباره «تکنولوژی و هوش مصنوعی (AI)» باشد.
+2. یک خبر حتماً «علمی» باشد.
+3. یک خبر حتماً درباره «ورزش» باشد.
+4. یک خبر حتماً درباره «جنگ، مسائل بین‌الملل یا سیاست» باشد.
 
-# حداقل این تعداد از پست‌ها حتماً عکس‌دار می‌شوند (فقط خبرهای عکس‌دار به مدل داده می‌شود).
-# دسته‌های باقی‌مانده هم اگر خبرشان عکس داشت، با عکس ارسال می‌شود.
-IMAGE_GROUPS_COUNT = 3
-IMAGE_PRIORITY = ["tech", "sport", "politics", "science"]
+قوانین سخت‌گیرانه:
+1. بدون حدس و اطلاعات خارج از متن.
+2. عدم استفاده از ستاره (*) یا تگ HTML در متون.
+3. لحن کوتاه و حرفه‌ای ژورنالیستی.
+4. در صورت برابری اهمیت، خبری که «پوشش» بیشتری (منابع بیشتر) دارد اولویت دارد.
+5. متن هر خبر باید کامل و دقیق باشد و جزئیات مهم (اسامی، اعداد، زمان، مکان) را داشته باشد؛ نه خلاصه کوتاه و نه تحلیل شخصی.
 
+اخبار ورودی:
+{news_text}
+"""
+
+
+# ══════════════════════════════════════════════════════════════
+# ۲) ساختار خروجی Gemini
+# ══════════════════════════════════════════════════════════════
 
 class AnalyzedNewsItem(BaseModel):
     index: int = Field(description="شماره ردیف خبر انتخاب شده")
     title: str = Field(description="تیتر جذاب و دقیق به فارسی")
-    summary: str = Field(description="خلاصه در ۲ تا ۳ جمله کوتاه")
-    why_important: str = Field(description="تحلیل کوتاه در ۱ یا ۲ جمله")
+    body: str = Field(
+        description="متن کامل و دقیق خبر با جزئیات مهم (اسامی، اعداد، زمان، مکان) در ۴ تا ۵ جمله، "
+                    "حدود ۴۰۰ تا ۵۰۰ کاراکتر؛ بدون تحلیل و بدون حدس"
+    )
     hashtags: list[str] = Field(description="دقیقا ۳ هشتگ مرتبط به فارسی")
 
 
 class AnalyzedNewsBatch(BaseModel):
     selected_news: list[AnalyzedNewsItem] = Field(description="لیست ۴ خبر برتر با تفکیک موضوعی")
 
+
+# ══════════════════════════════════════════════════════════════
+# ۳) سابقه خبرهای ارسال‌شده
+# ══════════════════════════════════════════════════════════════
 
 def normalize_link(url):
     return url.split("?")[0].rstrip("/").strip()
@@ -120,20 +194,36 @@ def load_seen():
 
 def save_seen(seen_list):
     unique_seen = list(dict.fromkeys(seen_list))
-    # نگهداری ۵۰۰ خبر آخر جهت جلوگیری از حجیم شدن فایل
     with SEEN_FILE.open("w", encoding="utf-8") as f:
-        json.dump(unique_seen[-500:], f, ensure_ascii=False, indent=2)
+        json.dump(unique_seen[-SEEN_LIMIT:], f, ensure_ascii=False, indent=2)
 
+
+# ══════════════════════════════════════════════════════════════
+# ۴) دریافت فیدها
+# ══════════════════════════════════════════════════════════════
 
 def clean_html(raw_html):
     text = re.sub(r"<[^>]+>", " ", raw_html or "")
     return re.sub(r"\s+", " ", text).strip()
 
 
+def extract_image_url(entry):
+    """اولین عکس معتبر از فید (media:content، media:thumbnail یا enclosure)."""
+    for key in ("media_content", "media_thumbnail"):
+        for m in entry.get(key, []) or []:
+            url = str(m.get("url", ""))
+            if url.startswith("http"):
+                return url
+    for enc in entry.get("enclosures", []) or []:
+        if str(enc.get("type", "")).startswith("image/") and str(enc.get("href", "")).startswith("http"):
+            return enc["href"]
+    return None
+
+
 def fetch_single_feed(feed_info, seen_set):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    feed_articles = []
+    headers = {"User-Agent": USER_AGENT}
     name = feed_info["name"]
+    feed_articles = []
     try:
         try:
             resp = requests.get(feed_info["url"], headers=headers, timeout=6)
@@ -145,26 +235,23 @@ def fetch_single_feed(feed_info, seen_set):
             print(f"❌ {name}: HTTP {resp.status_code}")
             return []
 
-        feed = feedparser.parse(resp.content)
-        entries = feed.entries[:4]
+        entries = feedparser.parse(resp.content).entries[:ENTRIES_PER_FEED]
         for entry in entries:
-            raw_link = entry.get("link", "").strip()
-            norm_link = normalize_link(raw_link)
+            link = normalize_link(entry.get("link", "").strip())
             title = clean_html(entry.get("title", ""))
             summary = clean_html(entry.get("summary", entry.get("description", "")))
 
-            if norm_link and title and norm_link not in seen_set:
-                feed_articles.append(
-                    {
-                        "source": name,
-                        "category": feed_info["category"],
-                        "group": feed_info["group"],
-                        "title": title,
-                        "summary": summary[:350] if summary else title,
-                        "link": norm_link,
-                        "image": extract_image_url(entry),
-                    }
-                )
+            if link and title and link not in seen_set:
+                feed_articles.append({
+                    "source": name,
+                    "category": feed_info["category"],
+                    "group": feed_info["group"],
+                    "title": title,
+                    "summary": summary[:SUMMARY_CHARS] if summary else title,
+                    "link": link,
+                    "image": extract_image_url(entry),
+                })
+
         if not entries:
             print(f"⚠️ {name}: فید خالی یا نامعتبر")
         else:
@@ -179,22 +266,70 @@ def fetch_new_articles(seen_list):
     articles = []
     batch_links = set()
 
-    # دریافت موازی تمامی فیدها جهت سرعت فوق‌العاده
+    # دریافت موازی تمامی فیدها
     with ThreadPoolExecutor(max_workers=len(RSS_FEEDS)) as executor:
-        futures = {executor.submit(fetch_single_feed, feed, seen_set): feed for feed in RSS_FEEDS}
+        futures = [executor.submit(fetch_single_feed, feed, seen_set) for feed in RSS_FEEDS]
         for future in as_completed(futures):
-            res = future.result()
-            for art in res:
+            for art in future.result():
                 if art["link"] not in batch_links:
                     batch_links.add(art["link"])
                     articles.append(art)
 
-    return articles
+    return dedupe_articles(articles)
+
+
+# ══════════════════════════════════════════════════════════════
+# ۵) پردازش محلی (بدون مصرف سهمیه Gemini)
+# ══════════════════════════════════════════════════════════════
+
+_WORD_RE = re.compile(r"[\w؀-ۿ]{4,}")
+
+
+def _title_tokens(title):
+    return {w.lower() for w in _WORD_RE.findall(title)}
+
+
+def dedupe_articles(articles, threshold=DEDUPE_THRESHOLD):
+    """خبرهای شبیه هم (در یک دسته) را یکی می‌کند.
+
+    coverage = تعداد منابعی که این خبر را پوشش داده‌اند.
+    links = لینک همه نسخه‌های ادغام‌شده؛ بعد از ارسال همه در سابقه ذخیره می‌شوند
+            تا نسخه منبع دیگرِ همین خبر در رانِ بعد دوباره منتشر نشود.
+    """
+    kept = []
+    for art in articles:
+        tokens = _title_tokens(art["title"])
+        dup = None
+        for k in kept:
+            if k["group"] != art["group"]:
+                continue
+            kt = k["_tokens"]
+            if tokens and kt and len(tokens & kt) / len(tokens | kt) >= threshold:
+                dup = k
+                break
+        if dup:
+            dup["coverage"] += 1
+            dup["links"].append(art["link"])
+            if not dup.get("image") and art.get("image"):
+                dup["image"] = art["image"]
+            continue
+        art["coverage"] = 1
+        art["links"] = [art["link"]]
+        art["_tokens"] = tokens
+        kept.append(art)
+
+    removed = len(articles) - len(kept)
+    if removed:
+        print(f"🧹 {removed} خبر تکراری بین منابع ادغام شد")
+    return kept
 
 
 def balance_articles(articles):
-    """از هر دسته به‌اندازه سهمش خبر برمی‌دارد. در IMAGE_GROUPS_COUNT دسته فقط خبرهای دارای عکس
-    به مدل داده می‌شوند (پس آن پست‌ها حتماً عکس دارند). بقیه دسته‌ها هم اگر عکس داشتند، با عکس می‌روند."""
+    """از هر دسته به‌اندازه سهمش خبر برمی‌دارد و بین منابع آن دسته نوبتی پخش می‌کند.
+
+    در IMAGE_GROUPS_COUNT دسته (به ترتیب IMAGE_PRIORITY) فقط خبرهای عکس‌دار انتخاب
+    می‌شوند. روی هر خبر انتخاب‌شده allow_image=True گذاشته می‌شود.
+    """
     by_group = {}
     for art in articles:
         by_group.setdefault(art["group"], {}).setdefault(art["source"], []).append(art)
@@ -208,45 +343,61 @@ def balance_articles(articles):
 
     result = []
     for group, quota in GROUP_QUOTAS.items():
-        is_img = group in image_groups
+        image_only = group in image_groups
         queues = list(by_group.get(group, {}).values())
-        if is_img:
+        if image_only:
             queues = [[a for a in q if a.get("image")] for q in queues]
+
         picked = []
         while len(picked) < quota and any(queues):
             for q in queues:
                 if q and len(picked) < quota:
                     picked.append(q.pop(0))
+
         for art in picked:
             art["allow_image"] = True
-        print(f"📊 دسته {group}: {len(picked)} خبر برای تحلیل" + (" (فقط عکس‌دار)" if is_img else ""))
+        print(f"📊 دسته {group}: {len(picked)} خبر برای تحلیل" + (" (فقط عکس‌دار)" if image_only else ""))
         result.extend(picked)
     return result
 
 
-# کدهایی که ارزش تلاش مجدد روی همان مدل دارند (خطای موقت و سریع‌برگشت مثل 503).
-# این کدها فوراً می‌روند سراغ مدل بعدی (تکرار روی همان مدل فایده ندارد و وقت می‌سوزاند):
-#   429 = پر شدن سهمیه (هر مدل سهمیه جدا دارد)
-#   504 = تایم‌اوت سمت گوگل؛ دوباره همان درخواست سنگین هم احتمالاً تایم‌اوت می‌خورد
-RETRYABLE = {408, 500, 502, 503}
-SKIP_MODEL_CODES = {429, 504}
+def fetch_article_text(art):
+    url = art["link"]
+    if trafilatura is None or "news.google.com" in url:
+        return None
+    try:
+        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=6)
+        if resp.status_code != 200:
+            return None
+        text = trafilatura.extract(resp.text, include_comments=False, include_tables=False)
+        return re.sub(r"\s+", " ", text)[:FULLTEXT_CHARS] if text else None
+    except Exception:
+        return None
 
-# به ترتیب اولویت؛ مدل‌هایی که در API وجود ندارند خودکار حذف می‌شوند
-MODELS = [
-    "gemini-3.6-flash",   # در چند ران پیاپی از اولین تلاش جواب داده (سریع و پایدار)
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-]
 
+def enrich_with_fulltext(articles):
+    """متن اصلی خبرهای نامزد را موازی می‌گیرد تا مدل جزئیات بیشتری داشته باشد."""
+    if trafilatura is None or not articles:
+        return
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        texts = list(executor.map(fetch_article_text, articles))
+    improved = 0
+    for art, text in zip(articles, texts):
+        if text and len(text) > len(art["summary"]):
+            art["summary"] = text
+            improved += 1
+    print(f"📰 متن کامل برای {improved} از {len(articles)} خبر گرفته شد")
+
+
+# ══════════════════════════════════════════════════════════════
+# ۶) Gemini: انتخاب و بازنویسی
+# ══════════════════════════════════════════════════════════════
 
 def _available_models(client):
     """فقط مدل‌هایی که واقعاً در API هستند، تا 404 وقت تلف نکند."""
     try:
         names = {m.name.removeprefix("models/") for m in client.models.list()}
-        ok = [m for m in MODELS if m in names]
-        return ok or MODELS
+        return [m for m in MODELS if m in names] or MODELS
     except Exception as e:
         print(f"⚠️ دریافت لیست مدل‌ها ناموفق بود ({e})؛ از لیست پیش‌فرض استفاده می‌شود")
         return MODELS
@@ -315,6 +466,16 @@ def _try_model(client, model, prompt, attempts=2, base=2, cap=30):
     return None
 
 
+def build_prompt(articles):
+    news_text = "".join(
+        f"[{i}] منبع: {art['source']} | دسته‌بندی: {art['category']} | "
+        f"پوشش: {art.get('coverage', 1)} منبع | "
+        f"تیتر: {art['title']}\nمتن: {art['summary']}\n---\n"
+        for i, art in enumerate(articles)
+    )
+    return PROMPT_TEMPLATE.format(news_text=news_text)
+
+
 def select_and_analyze(articles):
     if not articles:
         return []
@@ -327,30 +488,9 @@ def select_and_analyze(articles):
             retry_options=types.HttpRetryOptions(attempts=1),
         ),
     )
-
-    news_text = ""
-    for i, art in enumerate(articles):
-        news_text += (
-            f"[{i}] منبع: {art['source']} | دسته‌بندی: {art['category']} | "
-            f"تیتر: {art['title']}\nمتن: {art['summary']}\n---\n"
-        )
-
-    prompt = f"""نقش: سردبیر ارشد «عدل نیوز». شما باید دقیقاً ۴ خبر برتر را از بین اخبار زیر انتخاب کنید، به طوری که تفکیک موضوعی زیر به دقت رعایت شود:
-    1. یک خبر حتماً درباره «تکنولوژی و هوش مصنوعی (AI)» باشد.
-    2. یک خبر حتماً «علمی» باشد.
-    3. یک خبر حتماً درباره «ورزش» باشد.
-    4. یک خبر حتماً درباره «جنگ، مسائل بین‌الملل یا سیاست» باشد.
-
-    قوانین سخت‌گیرانه:
-    1. بدون حدس و اطلاعات خارج از متن.
-    2. عدم استفاده از ستاره (*) یا تگ HTML در متون.
-    3. لحن کوتاه و حرفه‌ای ژورنالیستی.
-
-    اخبار ورودی:
-    {news_text}
-    """
-
+    prompt = build_prompt(articles)
     models = _available_models(client)
+
     for round_no in (1, 2):
         for model in models:
             print(f"🧠 پردازش با {model}...")
@@ -365,29 +505,52 @@ def select_and_analyze(articles):
     return []
 
 
-EITAA_PHOTO_METHOD = "sendFile"  # نام متد ارسال فایل/عکس در API ایتایار؛ اگر متفاوت بود اینجا عوض کن
-MAX_IMAGE_BYTES = 5_000_000
-CAPTION_LIMIT = 1000
+# ══════════════════════════════════════════════════════════════
+# ۷) ایتا: قالب‌بندی و ارسال
+# ══════════════════════════════════════════════════════════════
+
+def format_post(item, source_name):
+    title = item.get("title", "").replace("*", "").strip()
+    body = item.get("body", "").replace("*", "").strip()
+    raw_tags = item.get("hashtags", [])
+
+    clean_tags = [f"#{t.strip().lstrip('#').replace(' ', '_')}" for t in raw_tags[:3] if t.strip()]
+    hashtags_str = " ".join(clean_tags) if clean_tags else "#خبر #فناوری"
+
+    # بدون ستاره و فرمت مارک‌داون، چون در ایتا خراب نمایش داده می‌شود
+    return f"📌 {title}\n\n{body}\n\n🏷 {hashtags_str}\n📡 منبع: {source_name}\n🆔 @{CHANNEL}"
 
 
-def extract_image_url(entry):
-    """اولین عکس معتبر از فید (media:content، media:thumbnail یا enclosure)."""
-    for key in ("media_content", "media_thumbnail"):
-        for m in entry.get(key, []) or []:
-            url = str(m.get("url", ""))
-            if url.startswith("http"):
-                return url
-    for enc in entry.get("enclosures", []) or []:
-        if str(enc.get("type", "")).startswith("image/") and str(enc.get("href", "")).startswith("http"):
-            return enc["href"]
-    return None
+def _eitaa_request(method, data, files=None, timeout=10):
+    """یک فراخوانی به API ایتایار؛ True فقط اگر پاسخ ok باشد."""
+    url = f"https://eitaayar.ir/api/{EITAA_TOKEN}/{method}"
+    try:
+        resp = requests.post(url, data=data, files=files, timeout=timeout)
+        if resp.status_code != 200:
+            print(f"⚠️ خطای HTTP از ایتاپیر ({method}): {resp.status_code}")
+            return False
+        res_json = resp.json()
+        if res_json.get("ok") is True:
+            return True
+        print(f"⚠️ خطای ایتاپیر در پاسخ ({method}): {res_json}")
+    except Exception as e:
+        print(f"⚠️ خطا در ارتباط با ایتا ({method}): {e}")
+    return False
+
+
+def send_to_eitaa(text):
+    return _eitaa_request("sendMessage", {"chat_id": CHANNEL, "text": text})
+
+
+def send_photo_to_eitaa(image_bytes, mime, caption):
+    files = {"file": ("news.jpg", image_bytes, mime)}
+    return _eitaa_request(EITAA_PHOTO_METHOD, {"chat_id": CHANNEL, "caption": caption}, files=files, timeout=20)
 
 
 def download_image(url):
-    """دانلود عکس؛ اگر چیزی نبود یا خیلی بزرگ بود None برمی‌گرداند."""
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    """دانلود عکس؛ اگر چیزی نبود، عکس نبود یا خیلی بزرگ بود None برمی‌گرداند."""
     try:
-        resp = requests.get(url, headers=headers, timeout=8)
+        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=8)
         mime = resp.headers.get("Content-Type", "").split(";")[0].strip()
         if resp.status_code != 200 or not mime.startswith("image/"):
             return None
@@ -397,20 +560,6 @@ def download_image(url):
     except Exception as e:
         print(f"⚠️ دانلود عکس ناموفق ({e})")
         return None
-
-
-def send_photo_to_eitaa(image_bytes, mime, caption):
-    url = f"https://eitaayar.ir/api/{EITAA_TOKEN}/{EITAA_PHOTO_METHOD}"
-    files = {"file": ("news.jpg", image_bytes, mime)}
-    data = {"chat_id": CHANNEL, "caption": caption}
-    try:
-        resp = requests.post(url, data=data, files=files, timeout=20)
-        if resp.status_code == 200 and resp.json().get("ok") is True:
-            return True
-        print(f"⚠️ ارسال عکس ناموفق: HTTP {resp.status_code}")
-    except Exception as e:
-        print(f"⚠️ خطا در ارسال عکس: {e}")
-    return False
 
 
 def publish_post(post_text, image_url):
@@ -426,39 +575,12 @@ def publish_post(post_text, image_url):
     return send_to_eitaa(post_text)
 
 
-def format_post(item, source_name):
-    title = item.get("title", "").replace("*", "").strip()
-    summary = item.get("summary", "").replace("*", "").strip()
-    why_imp = item.get("why_important", "").replace("*", "").strip()
-    raw_tags = item.get("hashtags", [])
-
-    clean_tags = [f"#{t.strip().lstrip('#').replace(' ', '_')}" for t in raw_tags[:3] if t.strip()]
-    hashtags_str = " ".join(clean_tags) if clean_tags else "#خبر #فناوری"
-
-    # ساختار متن بدون هیچ‌گونه ستاره یا فرمت مارک‌داون مخرب برای ایتا
-    return f"📌 {title}\n\n📝 خلاصه:\n{summary}\n\n💡 چرا مهم است؟\n{why_imp}\n\n🏷 {hashtags_str}\n📡 منبع: {source_name}\n🆔 @{CHANNEL}"
-
-
-def send_to_eitaa(text):
-    url = f"https://eitaayar.ir/api/{EITAA_TOKEN}/sendMessage"
-    try:
-        resp = requests.post(url, data={"chat_id": CHANNEL, "text": text}, timeout=10)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            if res_json.get("ok") is True:
-                return True
-            else:
-                print(f"⚠️ خطای ایتاپیر در پاسخ: {res_json}")
-        else:
-            print(f"⚠️ خطای HTTP از ایتاپیر: {resp.status_code}")
-        return False
-    except Exception as e:
-        print(f"⚠️ خطا در ارتباط با ایتا: {e}")
-        return False
-
+# ══════════════════════════════════════════════════════════════
+# ۸) اجرای اصلی
+# ══════════════════════════════════════════════════════════════
 
 def main():
-    print("🚀 شروع اجرای فوق‌سریع و هوشمند ربات...")
+    print("🚀 شروع اجرای ربات...")
     seen_list = load_seen()
     all_new_articles = fetch_new_articles(seen_list)
 
@@ -467,6 +589,7 @@ def main():
         return 0
 
     batch_articles = balance_articles(all_new_articles)
+    enrich_with_fulltext(batch_articles)
     selected_items = select_and_analyze(batch_articles)
 
     if not selected_items:
@@ -475,26 +598,33 @@ def main():
         return 1
 
     sent_count = 0
-    successfully_sent_links = []
+    sent_links = []
+    used_indexes = set()
 
-    for item in selected_items[:POSTS_COUNT]:
+    for item in selected_items:
+        if len(used_indexes) >= POSTS_COUNT:
+            break
         idx = item.get("index")
-        if idx is not None and 0 <= idx < len(batch_articles):
-            art = batch_articles[idx]
-            post_text = format_post(item, art["source"])
-            print(f"🖼 خبر {idx} ({art['source']}): {'با عکس' if art.get('allow_image') and art.get('image') else 'بدون عکس'}")
-            if publish_post(post_text, art.get("image") if art.get("allow_image") else None):
-                sent_count += 1
-                successfully_sent_links.append(art["link"])
-                print(f"✅ خبر شماره {idx} با موفقیت به ایتا ارسال شد.")
-                time.sleep(2)
-            else:
-                print(f"❌ ارسال خبر شماره {idx} ناموفق بود.")
+        # شماره نامعتبر یا تکراری (اگر مدل یک خبر را دو بار برگرداند) رد می‌شود و سهمیه پست را نمی‌خورد
+        if idx is None or not 0 <= idx < len(batch_articles) or idx in used_indexes:
+            continue
+        used_indexes.add(idx)
 
-    # ذخیره سابقه فقط برای اخبار ارسال‌شده (جهت جلوگیری از گم شدن اخبار در صورت خطای موقت ایتا)
-    if successfully_sent_links:
-        seen_list.extend(successfully_sent_links)
-        save_seen(seen_list)
+        art = batch_articles[idx]
+        image_url = art.get("image") if art.get("allow_image") else None
+        print(f"🖼 خبر {idx} ({art['source']}): {'با عکس' if image_url else 'بدون عکس'}")
+
+        if publish_post(format_post(item, art["source"]), image_url):
+            sent_count += 1
+            sent_links.extend(art.get("links") or [art["link"]])
+            print(f"✅ خبر شماره {idx} با موفقیت به ایتا ارسال شد.")
+            time.sleep(2)
+        else:
+            print(f"❌ ارسال خبر شماره {idx} ناموفق بود.")
+
+    # سابقه فقط برای خبرهای ارسال‌شده ذخیره می‌شود (با لینک همه نسخه‌های ادغام‌شده)
+    if sent_links:
+        save_seen(seen_list + sent_links)
         print(f"✅ مجموعاً {sent_count} پست با موفقیت منتشر و سابقه ذخیره شد.")
     else:
         print("⚠️ هیچ پستی با موفقیت ارسال نشد، سابقه آپدیت نشد.")
