@@ -12,6 +12,7 @@ import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import feedparser
@@ -54,6 +55,16 @@ CHANNEL = (
     .strip()
 )
 
+# چت اختیاری برای گزارش و هشدار خطا (کانال یا گروه خصوصی که ربات در آن ادمین است)
+ALERT_CHAT = (
+    os.environ.get("ALERT_CHAT", "").strip()
+    .replace("https://eitaa.com/", "")
+    .replace("http://eitaa.com/", "")
+    .replace("@", "")
+    .strip()
+)
+ALERT_MODE = os.environ.get("ALERT_MODE", "problems").strip().lower()  # problems = فقط وقت مشکل | always = هر ران
+
 # ── محتوا ──
 POSTS_COUNT = 4            # تعداد پست در هر ران
 SEEN_LIMIT = 500           # تعداد لینک‌هایی که در سابقه نگه داشته می‌شود
@@ -73,6 +84,18 @@ IMAGE_PRIORITY = ["tech", "sport", "politics", "science"]
 EITAA_PHOTO_METHOD = "sendFile"  # نام متد ارسال عکس در API ایتایار؛ اگر متفاوت بود اینجا عوض کن
 MAX_IMAGE_BYTES = 5_000_000
 CAPTION_LIMIT = 1000
+
+# ── جمع‌بندی روزانه ──
+DIGEST_ENABLED = os.environ.get("DIGEST", "on").strip().lower() != "off"
+DIGEST_MODELS = ["gemini-3.5-flash-lite", "gemini-3.6-flash"]  # مدل ارزان‌تر اول، تا سهمیه مدل‌های اصلی نسوزد
+DIGEST_START_HOUR = 21     # بازه ارسال به وقت تهران: از ساعت ۲۱ تا ۲ بامداد (ران بعدی، ران ناموفق را جبران می‌کند)
+DIGEST_END_HOUR = 2
+DIGEST_MIN_POSTS = 3       # با کمتر از این تعداد خبر، جمع‌بندی ساخته نمی‌شود
+DIGEST_MIN_GAP_HOURS = 12  # فاصله حداقلی بین دو جمع‌بندی
+LOG_KEEP_DAYS = 3
+LOG_FILE = Path(os.environ.get("POSTS_LOG_FILE") or BASE_DIR / "posts_log.json")
+IRAN_TZ = timezone(timedelta(hours=3, minutes=30))  # ایران ساعت تابستانی ندارد
+FEED_FAIL_ALERT = 3        # اگر حداقل این تعداد فید خراب بود، هشدار بده
 
 # ── Gemini ──
 # خطاهایی که ارزش تلاش مجدد روی همان مدل دارند (خطای موقت و سریع‌برگشت مثل 503).
@@ -137,6 +160,22 @@ RSS_FEEDS = [
      "url": "https://www.presstv.ir/rss.xml"},
 ]
 
+DIGEST_PROMPT_TEMPLATE = """نقش: سردبیر ارشد «عدل نیوز». خبرهای تکنولوژی و هوش مصنوعی که امروز در کانال منتشر شده در زیر آمده است.
+
+وظیفه:
+1. «جمع‌بندی امروز»: مهم‌ترین موارد را به تعداد خبرهای ورودی (حداکثر ۶ مورد) بنویس؛ هر مورد فقط یک جمله کوتاه و دقیق.
+2. «سؤال روز»: یک سؤال کوتاه و تعاملی درباره یکی از این خبرها بنویس که مخاطب را به نظر دادن دعوت کند (سؤال باز؛ نه بله/خیر).
+3. دقیقاً ۳ هشتگ فارسی مرتبط.
+
+قوانین سخت‌گیرانه:
+1. فقط از اطلاعات همین اخبار استفاده کن؛ بدون حدس و اطلاعات خارج از متن.
+2. عدم استفاده از ستاره (*) یا تگ HTML در متون.
+3. لحن کوتاه و حرفه‌ای ژورنالیستی.
+
+اخبار امروز:
+{posts_text}
+"""
+
 PROMPT_TEMPLATE = """نقش: سردبیر ارشد «عدل نیوز». شما باید دقیقاً ۴ خبر برتر را از بین اخبار زیر انتخاب کنید، به طوری که تفکیک موضوعی زیر به دقت رعایت شود:
 1. یک خبر حتماً درباره «تکنولوژی و هوش مصنوعی (AI)» باشد.
 2. یک خبر حتماً «علمی» باشد.
@@ -171,6 +210,25 @@ class AnalyzedNewsItem(BaseModel):
 
 class AnalyzedNewsBatch(BaseModel):
     selected_news: list[AnalyzedNewsItem] = Field(description="لیست ۴ خبر برتر با تفکیک موضوعی")
+
+
+class DailyDigest(BaseModel):
+    items: list[str] = Field(description="موارد جمع‌بندی؛ هر مورد یک جمله کوتاه")
+    question: str = Field(description="سؤال تعاملی روز برای مخاطبان")
+    hashtags: list[str] = Field(description="دقیقا ۳ هشتگ مرتبط به فارسی")
+
+
+# آمار همین ران؛ برای گزارش و هشدار خطا
+STATS = {}
+
+
+def _reset_stats():
+    STATS.clear()
+    STATS.update(feed_failed=[], posts_planned=0, posts_sent=0, photo_failed=0,
+                 model=None, models_tried=0, digest=None)
+
+
+_reset_stats()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -233,6 +291,7 @@ def fetch_single_feed(feed_info, seen_set):
 
         if resp.status_code != 200:
             print(f"❌ {name}: HTTP {resp.status_code}")
+            STATS["feed_failed"].append(name)
             return []
 
         entries = feedparser.parse(resp.content).entries[:ENTRIES_PER_FEED]
@@ -254,10 +313,12 @@ def fetch_single_feed(feed_info, seen_set):
 
         if not entries:
             print(f"⚠️ {name}: فید خالی یا نامعتبر")
+            STATS["feed_failed"].append(name)
         else:
             print(f"✅ {name}: {len(feed_articles)} خبر جدید از {len(entries)}")
     except Exception as e:
         print(f"⚡ عبور سریع از {name} به دلیل خطا یا کندی: {e}")
+        STATS["feed_failed"].append(name)
     return feed_articles
 
 
@@ -282,7 +343,7 @@ def fetch_new_articles(seen_list):
 # ۵) پردازش محلی (بدون مصرف سهمیه Gemini)
 # ══════════════════════════════════════════════════════════════
 
-_WORD_RE = re.compile(r"[\w؀-ۿ]{4,}")
+_WORD_RE = re.compile(r"[\w\u0600-\u06FF]{4,}")
 
 
 def _title_tokens(title):
@@ -403,16 +464,29 @@ def _available_models(client):
         return MODELS
 
 
-def _parse_selected(resp):
+def _load_json(resp):
     raw = (resp.text or "").strip()
     raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
-    return json.loads(raw).get("selected_news", [])
+    return json.loads(raw)
 
 
-def _make_config(low_thinking):
+def _parse_selected(resp):
+    return _load_json(resp).get("selected_news", [])
+
+
+def _parse_digest(resp):
+    data = _load_json(resp)
+    items = [str(i).strip() for i in data.get("items", []) if str(i).strip()]
+    question = str(data.get("question", "")).strip()
+    if len(items) >= 2 and question:
+        return {"items": items, "question": question, "hashtags": data.get("hashtags", [])}
+    return None
+
+
+def _make_config(low_thinking, schema=AnalyzedNewsBatch):
     cfg = dict(
         response_mime_type="application/json",
-        response_schema=AnalyzedNewsBatch,
+        response_schema=schema,
         temperature=0.2,
     )
     if low_thinking:
@@ -421,8 +495,9 @@ def _make_config(low_thinking):
     return types.GenerateContentConfig(**cfg)
 
 
-def _try_model(client, model, prompt, attempts=2, base=2, cap=30):
+def _try_model(client, model, prompt, attempts=2, base=2, cap=30, schema=AnalyzedNewsBatch, parse=None):
     """روی یک مدل با exponential backoff + jitter تلاش می‌کند. شکست = None."""
+    parse = parse or _parse_selected
     low_thinking = True
     i = 0
     while i < attempts:
@@ -431,9 +506,9 @@ def _try_model(client, model, prompt, attempts=2, base=2, cap=30):
             resp = client.models.generate_content(
                 model=model,
                 contents=prompt,
-                config=_make_config(low_thinking),
+                config=_make_config(low_thinking, schema),
             )
-            selected = _parse_selected(resp)
+            selected = parse(resp)
             if selected:
                 return selected
             print(f"⚠️ {model}: خروجی خالی (تلاش {i}/{attempts})")
@@ -476,11 +551,8 @@ def build_prompt(articles):
     return PROMPT_TEMPLATE.format(news_text=news_text)
 
 
-def select_and_analyze(articles):
-    if not articles:
-        return []
-
-    client = genai.Client(
+def _make_client():
+    return genai.Client(
         api_key=GEMINI_KEY,
         http_options=types.HttpOptions(
             timeout=50_000,  # میلی‌ثانیه؛ بیشتر از این صبر نمی‌کنیم
@@ -488,14 +560,23 @@ def select_and_analyze(articles):
             retry_options=types.HttpRetryOptions(attempts=1),
         ),
     )
+
+
+def select_and_analyze(articles):
+    if not articles:
+        return []
+
+    client = _make_client()
     prompt = build_prompt(articles)
     models = _available_models(client)
 
     for round_no in (1, 2):
         for model in models:
             print(f"🧠 پردازش با {model}...")
+            STATS["models_tried"] += 1
             result = _try_model(client, model, prompt)
             if result:
+                STATS["model"] = model
                 return result
         if round_no == 1:
             print("🔁 همه مدل‌ها ناموفق بودند؛ ۲۰ ثانیه صبر و دور دوم...")
@@ -509,13 +590,15 @@ def select_and_analyze(articles):
 # ۷) ایتا: قالب‌بندی و ارسال
 # ══════════════════════════════════════════════════════════════
 
+def _format_tags(raw_tags, default):
+    clean_tags = [f"#{t.strip().lstrip('#').replace(' ', '_')}" for t in raw_tags[:3] if t.strip()]
+    return " ".join(clean_tags) if clean_tags else default
+
+
 def format_post(item, source_name):
     title = item.get("title", "").replace("*", "").strip()
     body = item.get("body", "").replace("*", "").strip()
-    raw_tags = item.get("hashtags", [])
-
-    clean_tags = [f"#{t.strip().lstrip('#').replace(' ', '_')}" for t in raw_tags[:3] if t.strip()]
-    hashtags_str = " ".join(clean_tags) if clean_tags else "#خبر #فناوری"
+    hashtags_str = _format_tags(item.get("hashtags", []), "#خبر #فناوری")
 
     # بدون ستاره و فرمت مارک‌داون، چون در ایتا خراب نمایش داده می‌شود
     return f"📌 {title}\n\n{body}\n\n🏷 {hashtags_str}\n📡 منبع: {source_name}\n🆔 @{CHANNEL}"
@@ -572,15 +655,167 @@ def publish_post(post_text, image_url):
                     return True
             elif send_photo_to_eitaa(img[0], img[1], ""):
                 return send_to_eitaa(post_text)
+        STATS["photo_failed"] += 1  # عکس نرسید؛ پست به‌صورت متن می‌رود
     return send_to_eitaa(post_text)
 
 
 # ══════════════════════════════════════════════════════════════
-# ۸) اجرای اصلی
+# ۸) سابقه پست‌ها و جمع‌بندی روزانه
 # ══════════════════════════════════════════════════════════════
 
-def main():
-    print("🚀 شروع اجرای ربات...")
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
+def _parse_ts(value):
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_log():
+    try:
+        data = json.loads(LOG_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("posts"), list):
+            return data
+    except Exception:
+        pass
+    return {"posts": [], "last_digest": None}
+
+
+def save_log(log):
+    cutoff = now_utc() - timedelta(days=LOG_KEEP_DAYS)
+    log["posts"] = [p for p in log["posts"] if (_parse_ts(p.get("ts")) or cutoff) >= cutoff]
+    LOG_FILE.write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def record_published(entries):
+    """خبرهای تکنولوژی و هوش مصنوعیِ منتشرشده را برای جمع‌بندی روزانه نگه می‌دارد."""
+    if not entries:
+        return
+    log = load_log()
+    stamp = now_utc().isoformat()
+    for art, item in entries:
+        if art.get("group") == "tech":
+            log["posts"].append({
+                "ts": stamp,
+                "title": item.get("title", ""),
+                "body": item.get("body", ""),
+                "source": art.get("source", ""),
+                "link": art.get("link", ""),
+                "digested": False,
+            })
+    save_log(log)
+
+
+def build_digest_prompt(posts):
+    posts_text = "".join(
+        f"[{i}] {p.get('title', '')}\n{p.get('body', '')[:300]}\n---\n"
+        for i, p in enumerate(posts[-12:], start=1)
+    )
+    return DIGEST_PROMPT_TEMPLATE.format(posts_text=posts_text)
+
+
+def generate_digest(posts):
+    client = _make_client()
+    prompt = build_digest_prompt(posts)
+    for model in DIGEST_MODELS:
+        print(f"🧠 جمع‌بندی با {model}...")
+        result = _try_model(client, model, prompt, schema=DailyDigest, parse=_parse_digest)
+        if result:
+            return result
+    return None
+
+
+def format_digest(digest):
+    clean = lambda text: str(text).replace("*", "").strip()
+    items = [clean(i) for i in digest["items"] if clean(i)][:6]
+    tags = _format_tags(digest.get("hashtags", []), "#هوش_مصنوعی #تکنولوژی")
+    lines = ["📋 جمع‌بندی امروز تکنولوژی و هوش مصنوعی", ""]
+    lines += [f"▫️ {i}" for i in items]
+    lines += ["", "💬 سؤال امروز:", clean(digest["question"]), "", f"🏷 {tags}", f"🆔 @{CHANNEL}"]
+    return "\n".join(lines)
+
+
+def maybe_send_digest():
+    """روزی یک‌بار، شب‌ها: جمع‌بندی خبرهای تکنولوژی که هنوز در جمع‌بندی نیامده‌اند.
+    فقط یک درخواست به Gemini می‌زند و هیچ ران جدیدی در گیت‌هاب نمی‌سازد."""
+    if not DIGEST_ENABLED:
+        return
+    now = now_utc()
+    hour = now.astimezone(IRAN_TZ).hour
+    if not (hour >= DIGEST_START_HOUR or hour < DIGEST_END_HOUR):
+        return
+
+    log = load_log()
+    last = _parse_ts(log.get("last_digest"))
+    if last and now - last < timedelta(hours=DIGEST_MIN_GAP_HOURS):
+        return
+    pending = [p for p in log["posts"] if not p.get("digested")]
+    if len(pending) < DIGEST_MIN_POSTS:
+        print(f"📋 جمع‌بندی: فقط {len(pending)} خبر جدید دارم (حداقل {DIGEST_MIN_POSTS})؛ امشب رد شد.")
+        return
+
+    digest = generate_digest(pending)
+    if digest and send_to_eitaa(format_digest(digest)):
+        for p in pending:
+            p["digested"] = True
+        log["last_digest"] = now.isoformat()
+        save_log(log)
+        STATS["digest"] = "sent"
+        print("📋 جمع‌بندی روزانه ارسال شد.")
+    else:
+        STATS["digest"] = "failed"
+        print("⚠️ جمع‌بندی ساخته یا ارسال نشد؛ ران بعدی دوباره تلاش می‌کند.")
+
+
+# ══════════════════════════════════════════════════════════════
+# ۹) گزارش و هشدار خطا
+# ══════════════════════════════════════════════════════════════
+
+def send_alert(text):
+    if not ALERT_CHAT:
+        return False
+    return _eitaa_request("sendMessage", {"chat_id": ALERT_CHAT, "text": text})
+
+
+def send_report(exit_code):
+    """اگر مشکلی بود (یا ALERT_MODE=always) یک گزارش کوتاه به ALERT_CHAT می‌فرستد."""
+    if not ALERT_CHAT:
+        return
+    problems = []
+    if exit_code != 0:
+        problems.append("ران ناموفق بود: هوش مصنوعی نتیجه نداد")
+    if STATS["posts_planned"] and STATS["posts_sent"] < STATS["posts_planned"]:
+        problems.append(f"فقط {STATS['posts_sent']} از {STATS['posts_planned']} پست ارسال شد")
+    if len(STATS["feed_failed"]) >= FEED_FAIL_ALERT:
+        problems.append("چند فید خراب بود")
+    if STATS["photo_failed"]:
+        problems.append(f"{STATS['photo_failed']} عکس ارسال نشد و پست به‌صورت متن رفت")
+    if STATS["digest"] == "failed":
+        problems.append("جمع‌بندی روزانه ساخته یا ارسال نشد")
+
+    if not problems and ALERT_MODE != "always":
+        return
+
+    lines = ["⚠️ گزارش ربات عدل نیوز" if problems else "✅ گزارش ربات عدل نیوز"]
+    lines += [f"• {p}" for p in problems] or ["• همه‌چیز عادی بود"]
+    lines.append(f"📨 پست‌ها: {STATS['posts_sent']} از {STATS['posts_planned']}")
+    if STATS["model"]:
+        lines.append(f"🧠 مدل: {STATS['model']} (تعداد مدل امتحان‌شده: {STATS['models_tried']})")
+    if STATS["feed_failed"]:
+        lines.append("📡 فیدهای خراب: " + "، ".join(sorted(set(STATS["feed_failed"]))))
+    if STATS["digest"]:
+        lines.append("📋 جمع‌بندی: " + ("ارسال شد" if STATS["digest"] == "sent" else "ناموفق"))
+    send_alert("\n".join(lines))
+
+
+# ══════════════════════════════════════════════════════════════
+# ۱۰) اجرای اصلی
+# ══════════════════════════════════════════════════════════════
+
+def run_news():
     seen_list = load_seen()
     all_new_articles = fetch_new_articles(seen_list)
 
@@ -597,8 +832,8 @@ def main():
         # کد خروج 1 => ران گیت‌هاب اکشنز قرمز می‌شود و می‌توانی دوباره اجرایش کنی
         return 1
 
-    sent_count = 0
     sent_links = []
+    published = []
     used_indexes = set()
 
     for item in selected_items:
@@ -615,21 +850,41 @@ def main():
         print(f"🖼 خبر {idx} ({art['source']}): {'با عکس' if image_url else 'بدون عکس'}")
 
         if publish_post(format_post(item, art["source"]), image_url):
-            sent_count += 1
+            STATS["posts_sent"] += 1
             sent_links.extend(art.get("links") or [art["link"]])
+            published.append((art, item))
             print(f"✅ خبر شماره {idx} با موفقیت به ایتا ارسال شد.")
             time.sleep(2)
         else:
             print(f"❌ ارسال خبر شماره {idx} ناموفق بود.")
+    STATS["posts_planned"] = len(used_indexes)
 
     # سابقه فقط برای خبرهای ارسال‌شده ذخیره می‌شود (با لینک همه نسخه‌های ادغام‌شده)
     if sent_links:
         save_seen(seen_list + sent_links)
-        print(f"✅ مجموعاً {sent_count} پست با موفقیت منتشر و سابقه ذخیره شد.")
+        record_published(published)
+        print(f"✅ مجموعاً {STATS['posts_sent']} پست با موفقیت منتشر و سابقه ذخیره شد.")
     else:
         print("⚠️ هیچ پستی با موفقیت ارسال نشد، سابقه آپدیت نشد.")
 
     return 0
+
+
+def main():
+    print("🚀 شروع اجرای ربات...")
+    _reset_stats()
+    try:
+        code = run_news()
+        try:
+            maybe_send_digest()
+        except Exception as e:  # خطای جمع‌بندی نباید ران خبر را خراب کند
+            STATS["digest"] = "failed"
+            print(f"⚠️ خطا در جمع‌بندی: {type(e).__name__}: {e}")
+    except Exception as e:
+        send_alert(f"❌ ربات عدل نیوز با خطا متوقف شد:\n{type(e).__name__}: {e}")
+        raise
+    send_report(code)
+    return code
 
 
 if __name__ == "__main__":
