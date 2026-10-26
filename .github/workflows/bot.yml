@@ -1,14 +1,12 @@
 name: Eitaa News Bot
 
 on:
-  schedule:
-    - cron: '0 */3 * * *' # اجرا هر ۳ ساعت یک‌بار (۸ بار در روز)؛ جمع‌بندی روزانه خودش در ران حدود ساعت ۲۱:۳۰ تهران ارسال می‌شود
-  workflow_dispatch:      # امکان اجرای دستی
+  workflow_dispatch:      # اجرا از cron-job.org یا دستی
 
 permissions:
-  contents: write         # مجوز ذخیره خودکار فایل‌های seen.json و posts_log.json در گیت‌هاب
+  contents: write         # ذخیره خودکار seen.json و posts_log.json
 
-# جلوگیری از اجرای هم‌زمان (مثلاً دستی + زمان‌بندی‌شده) که باعث تداخل در push فایل‌ها می‌شود
+# جلوگیری از اجرای هم‌زمان که باعث تداخل در push فایل‌ها می‌شود
 concurrency:
   group: eitaa-news-bot
   cancel-in-progress: false
@@ -36,7 +34,6 @@ jobs:
           GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
           EITAA_TOKEN: ${{ secrets.EITAA_TOKEN }}
           CHANNEL: ${{ secrets.CHANNEL }}
-          # اختیاری: چت خصوصی برای گزارش و هشدار خطا (اگر secret تعریف نشود، گزارش ارسال نمی‌شود)
           ALERT_CHAT: ${{ secrets.ALERT_CHAT }}
           # برای خاموش کردن جمع‌بندی روزانه، خط زیر را از کامنت دربیاور:
           # DIGEST: 'off'
