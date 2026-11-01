@@ -223,6 +223,22 @@
       "source": "ورج (هوش مصنوعی)",
       "link": "https://www.theverge.com/ai-artificial-intelligence/1023820/sam-altman-ram-shortage-cloud-servers",
       "digested": false
+    },
+    {
+      "ts": "2026-11-01T11:47:52.253444+00:00",
+      "title": "توافق غول‌های هوش مصنوعی برای استانداردی جدید در منع استخراج داده‌ها",
+      "body": "شرکت‌های بزرگ هوش مصنوعی از جمله گوگل، مایکروسافت، شرکت OpenAI و شرکت Anthropic اعلام کردند استانداردی جدید را برای انصراف ناشران از جمع‌آوری اطلاعات سایت‌هایشان می‌پذیرند. این پروتکل جدید که توسط کوین کلی در کارگروه مهندسی اینترنت پیشنهاد شده، به ناشران اجازه می‌دهد تنظیمات آموزش هوش مصنوعی خود را از طریق فایل robots.txt روی چندین خزنده‌ی وب اعمال کنند. پیش از این ناشران مجبور بودند ترجیحات خود را به طور جداگانه به هر شرکت هوش مصنوعی اعلام کنند.",
+      "source": "ورج (هوش مصنوعی)",
+      "link": "https://www.theverge.com/tech/1023763/openai-google-microsoft-ai-scraping-standard-opt-out",
+      "digested": false
+    },
+    {
+      "ts": "2026-11-01T11:47:52.253444+00:00",
+      "title": "بررسی نقص فنی فریزر پایگاه نظامی پنتاگون به عنوان حمله سایبری احتمالی",
+      "body": "طبق گزارش اختصاصی خبرگزاری رویترز به نقل از مقامات آگاه، پنتاگون در حال بررسی اختلالات و نقص فنی پیش‌آمده در سیستم‌های فریزر یکی از پایگاه‌های نظامی خود است. مسئولان امر اعلام کرده‌اند که این حادثه و خرابی‌های به وجود آمده به عنوان یک حمله سایبری احتمالی تحت پیگیری و تحقیقات قرار گرفته است.",
+      "source": "رویترز (فناوری)",
+      "link": "https://news.google.com/rss/articles/CBMivgFBVV95cUxNZWtDa2JmUnFRRENlQ0RoX2hseFpyajltZE5vbjUwdnlDeTQ5M01zanFrNTBJcE1NV0RwZGFCd29LQXZQN2RYd3pBZnhNbU91eEdZalRSbVpXbTdnS2VXMXNaWE9ZdV9tSHVub29PUy1kX3BFYTNZUWM2NFpTLTZTWGdLX2hTXzYxR2JPanVaeVowcVZmMTZubVZxZE9QSjFPYmVuQjJFVVZqTUJKRUlMclM0NGM4YTNzMmR0ZUdR",
+      "digested": false
     }
   ],
   "last_digest": "2026-10-31T17:49:55.283158+00:00"
