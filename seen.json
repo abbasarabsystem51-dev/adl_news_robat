@@ -1,8 +1,4 @@
 [
-  "https://www.mehrnews.com/news/6995920/%D8%AA%D8%B3%D9%87%DB%8C%D9%84%D8%A7%D8%AA-%D8%AC%D8%AF%DB%8C%D8%AF-%D9%88%D8%B2%D8%A7%D8%B1%D8%AA-%D8%B9%D9%84%D9%88%D9%85-%D8%A8%D8%B1%D8%A7%DB%8C-%D9%BE%D8%B0%DB%8C%D8%B1%D9%81%D8%AA%D9%87-%D8%B4%D8%AF%DA%AF%D8%A7%D9%86-%D8%A7%D8%B1%D8%B4%D8%AF-%D9%88-%D8%AF%DA%A9%D8%AA%D8%B1%DB%8C-%DB%B1%DB%B4%DB%B0%DB%B5",
-  "https://www.theverge.com/ai-artificial-intelligence/1023820/sam-altman-ram-shortage-cloud-servers",
-  "https://www.mehrnews.com/news/6996235/%D9%87%D8%B4%D8%AF%D8%A7%D8%B1-%D8%AF%D8%B1%D8%A8%D8%A7%D8%B1%D9%87-%DA%A9%D8%A7%D9%87%D8%B4-%D8%A8%DB%8C-%D8%B3%D8%A7%D8%A8%D9%82%D9%87-%D8%B0%D8%AE%D8%A7%DB%8C%D8%B1-%DA%AF%D8%A7%D8%B2-%D8%A2%D9%84%D9%85%D8%A7%D9%86-%D8%AF%D8%B1-%D8%A2%D8%B3%D8%AA%D8%A7%D9%86%D9%87-%D8%B2%D9%85%D8%B3%D8%AA%D8%A7%D9%86",
-  "https://www.skysports.com/nba/news/12040/13606564/wnba-championship-gabby-williams-leads-golden-state-valkyries-to-first-title-in-second-season-beating-atlanta-dream-68-63-in-game-7",
   "https://www.mehrnews.com/news/6996240/%D9%85%DB%8C%D8%B2%D8%A7%D9%86-%D8%B3%D9%87%D9%85%DB%8C%D9%87-%D8%A8%D9%86%D8%B2%DB%8C%D9%86-%D9%BE%D8%A7%D8%B3%D8%AE%DA%AF%D9%88%DB%8C-%D9%86%DB%8C%D8%A7%D8%B2-%D8%B3%D8%A7%DA%A9%D9%86%D8%A7%D9%86-%D8%A7%D8%B3%D8%AA%D8%A7%D9%86-%D9%87%D8%A7%DB%8C-%D8%AF%D9%88%D8%B1-%D8%A7%D8%B2-%D9%85%D8%B1%DA%A9%D8%B2-%D9%86%DB%8C%D8%B3%D8%AA",
   "https://www.theverge.com/tech/1023763/openai-google-microsoft-ai-scraping-standard-opt-out",
   "https://www.wired.com/story/a-newly-discovered-trail-of-cosmic-debris-illustrates-what-the-end-of-the-solar-system-could-look-like",
@@ -498,5 +494,9 @@
   "https://www.theverge.com/ai-artificial-intelligence/1034815/california-openai-hugging-face-lawsuit",
   "https://digiato.com/interdisciplinary/earth-without-life-simulation",
   "https://www.skysports.com/football/switzerland-vs-scotland/report/554127",
-  "https://www.mehrnews.com/news/7013541/%D9%81%D9%82%D8%AF%D8%A7%D9%86-%D8%A7%DB%8C%D9%86-%D9%81%D9%82%DB%8C%D9%87-%D8%A8%D8%B2%D8%B1%DA%AF-%D8%B6%D8%A7%DB%8C%D8%B9%D9%87-%D8%A7%DB%8C-%D8%A8%D8%B1%D8%A7%DB%8C-%D8%AC%D9%87%D8%A7%D9%86-%D8%AA%D8%B4%DB%8C%D8%B9-%D8%A7%D8%B3%D8%AA"
+  "https://www.mehrnews.com/news/7013541/%D9%81%D9%82%D8%AF%D8%A7%D9%86-%D8%A7%DB%8C%D9%86-%D9%81%D9%82%DB%8C%D9%87-%D8%A8%D8%B2%D8%B1%DA%AF-%D8%B6%D8%A7%DB%8C%D8%B9%D9%87-%D8%A7%DB%8C-%D8%A8%D8%B1%D8%A7%DB%8C-%D8%AC%D9%87%D8%A7%D9%86-%D8%AA%D8%B4%DB%8C%D8%B9-%D8%A7%D8%B3%D8%AA",
+  "https://techcrunch.com/2026/11/16/all-the-questions-nvidia-should-answer-on-tuesday-but-probably-wont",
+  "https://www.theguardian.com/science/audio/2026/nov/17/nasa-voyager-1-probe-incredible-milestone-podcast",
+  "https://www.skysports.com/boxing/news/12040/13613108/irish-boxer-lee-reeves-dies-aged-31-three-months-after-suffering-serious-injuries-in-fight",
+  "https://www.mehrnews.com/news/7013882/%D9%87%D8%B2%DB%8C%D9%86%D9%87-%D8%A7%D8%B3%D8%AA%D8%A7%D9%86%D8%AF%D8%A7%D8%B1%D8%AF%D8%B3%D8%A7%D8%B2%DB%8C-%D9%88%D8%B3%D8%A7%DB%8C%D9%84-%DA%AF%D8%B1%D9%85%D8%A7%DB%8C%D8%B4%DB%8C-%D9%88-%D8%B3%D8%B1%D9%85%D8%A7%DB%8C%D8%B4%DB%8C-%D9%86%D8%A8%D8%A7%DB%8C%D8%AF-%D8%A8%D8%B1-%D8%AF%D9%88%D8%B4-%D9%85%D8%B1%D8%AF%D9%85"
 ]
